@@ -1,1 +1,283 @@
-...
+# ============================================================
+# 灵枢（LingShu）Agent — 主配置文件
+# 整合：白皮书 + 增补卷 + 进化卷
+# ============================================================
+
+# 基础配置
+app:
+  name: "灵枢"
+  name_en: "LingShu"
+  version: "0.3.0"
+  # 日志级别: DEBUG, INFO, WARNING, ERROR
+  log_level: INFO
+  # 日志保留天数
+  log_retention_days: 30
+
+# 模型配置
+models:
+  asr:
+    model_path: "models/asr/whisper-tiny"
+    model_size: "tiny"
+    language: "zh"
+    device: "cpu"
+    compute_type: "int8"
+
+  nlu:
+    model_path: "models/nlu/qwen2.5-1.5b-lora"
+    base_model: "Qwen/Qwen2.5-1.5B-Instruct"
+    device: "cpu"
+    max_tokens: 512
+    temperature: 0.3
+
+  vlm:
+    model_path: "models/vlm/qwen3-vl-8b"
+    base_model: "Qwen/Qwen3-VL-8B-Instruct"
+    device: "cpu"
+    compute_type: "fp8"
+    screenshot_fps: 2
+    max_resolution: [1920, 1080]
+
+  # 声纹识别模型（增补卷十三）
+  speaker:
+    model_path: "models/speaker/ecapa-tdnn"  # 或轻量级MFCC方案
+    embedding_dim: 192
+    similarity_threshold: 0.85  # 声纹匹配阈值（0-1，越高越严格）
+    min_enroll_samples: 3       # 最少注册语音样本数
+
+  # 情感识别模型（进化卷五）
+  emotion:
+    model_path: "models/emotion/wav2vec-emotion"
+    device: "cpu"
+    # 情绪分类: neutral, happy, sad, angry, anxious, confused
+
+# 语音交互配置
+voice:
+  input_device: null
+  wake_word: "灵枢"
+  vad_sensitivity: 3
+  sample_rate: 16000
+  max_recording_seconds: 30
+
+# ============================================================
+# 授权控制配置（增补卷十二）
+# ============================================================
+auth:
+  # 授权状态文件路径（加密存储）
+  auth_file: "config/.auth_encrypted"
+  # 授权有效期（天），0 表示永久
+  auth_valid_days: 0
+  # 首次启动是否强制弹窗授权
+  require_first_auth: true
+  # 分级权限体系
+  permission_levels:
+    # 一级：日常操作（无需确认）
+    level_1:
+      - open
+      - click
+      - scroll
+      - type
+      - query
+    # 二级：敏感操作（需语音/弹窗确认）
+    level_2:
+      - close
+      - delete_file
+      - delete_folder
+      - modify_system_settings
+      - execute_shell
+    # 三级：高危操作（需手动点击确认，语音不可绕过）
+    level_3:
+      - format_disk
+      - payment
+      - install_software
+      - network_config
+  # 访客模式可用指令
+  guest_mode_actions:
+    - open
+    - click
+    - query
+    - screenshot
+  # 操作撤销有效期（秒）
+  undo_timeout_seconds: 30
+
+# ============================================================
+# 声纹识别配置（增补卷十三）
+# ============================================================
+speaker:
+  # 声纹库路径
+  profile_dir: "config/speaker_profiles"
+  # 验证模式: strict（必须匹配）/ guest（不匹配降级访客）/ off（关闭）
+  verify_mode: strict
+  # 注册引导文本
+  enrollment_text: "灵枢在此，主上何令？"
+  # 注册样本数
+  enrollment_samples: 5
+  # 多用户支持
+  max_users: 10
+
+# ============================================================
+# 图形界面配置（增补卷十一）
+# ============================================================
+gui:
+  # 界面框架: gradio / streamlit / none（禁用）
+  framework: gradio
+  # 启动后自动打开浏览器
+  auto_launch: true
+  # 服务端口
+  port: 7860
+  # 允许外部访问（0.0.0.0）或仅本地（127.0.0.1）
+  host: "127.0.0.1"
+  # 主题: default / dark / light
+  theme: dark
+  # 状态指示灯刷新频率（秒）
+  status_refresh_interval: 2
+
+# 执行控制配置
+executor:
+  safety_level: normal
+  sensitive_actions:
+    - delete_file
+    - delete_folder
+    - format_disk
+    - execute_shell
+    - payment
+    - modify_system_settings
+  action_delay_ms: 500
+  coordinate_tolerance: 10
+
+# 记忆与知识库
+memory:
+  vector_db: chromadb
+  db_path: "knowledge/vector_db"
+  max_entries: 10000
+  similarity_threshold: 0.75
+
+# 系统监控（观星术）
+monitor:
+  interval_seconds: 5
+  cpu_threshold: 85
+  memory_threshold: 85
+  disk_threshold: 90
+  # 主动预警（进化卷一）
+  proactive_alerts: true
+  # 性能优化建议阈值
+  performance_suggest_threshold: 80
+
+# ============================================================
+# 主动智能配置（进化卷一）
+# ============================================================
+proactive:
+  # 是否启用主动智能
+  enabled: true
+  # 主动检测间隔（秒）
+  check_interval: 60
+  # 预测性维护
+  predictive_maintenance: true
+  # 跨域信息整合
+  cross_domain_integration: true
+  # 智能日程提醒
+  smart_schedule: true
+  # 建议静默时段（不打扰）
+  quiet_hours: [23, 7]  # 23:00 - 07:00
+
+# ============================================================
+# 自进化配置（进化卷二）
+# ============================================================
+evolution:
+  # 是否启用自进化
+  enabled: true
+  # SEAgent 三位一体进化闭环
+  seagent:
+    # 导师模块：生成练习任务
+    tutor_enabled: true
+    # 学生模块：执行任务学习
+    student_enabled: true
+    # 裁判模块：评估执行结果
+    judge_enabled: true
+  # 自我反思频率
+  reflection_interval: 3600  # 每小时一次
+  # 失败操作自动重试次数
+  auto_retry_count: 2
+  # 学习操作记录阈值（达到N次失败即触发反思）
+  reflection_trigger_threshold: 3
+
+# ============================================================
+# 多智能体配置（进化卷三）
+# ============================================================
+multi_agent:
+  # 总指挥官模式
+  commander_enabled: true
+  # 专家智能体注册表
+  experts:
+    visual_master:
+      name: "视觉大师"
+      description: "图像、视频处理软件操控专家"
+      supported_apps: ["photoshop", "premiere", "after_effects", "gimp"]
+    data_steward:
+      name: "数据管家"
+      description: "Excel、数据库、数据可视化专家"
+      supported_apps: ["excel", "powerbi", "tableau", "sqlite"]
+    stage_director:
+      name: "舞台总监"
+      description: "DMX灯光、音响、舞台设备控制专家"
+      supported_protocols: ["dmx512", "mqtt", "modbus"]
+    hardware_controller:
+      name: "硬件控制器"
+      description: "通用HID设备控制专家"
+      supported_protocols: ["hid", "serial", "tcp"]
+  # 任务拆解策略: auto / manual
+  task_decomposition: auto
+
+# ============================================================
+# 数字孪生配置（进化卷四）
+# ============================================================
+digital_twin:
+  # 虚拟沙盒预演
+  sandbox_enabled: true
+  # 预演模式: strict（必须预演）/ advisory（建议预演）/ off（关闭）
+  rehearsal_mode: advisory
+  # 高风险操作阈值（涉及level_3或批量操作）
+  high_risk_threshold: 10
+  # 预演确认超时（秒）
+  rehearsal_timeout: 30
+
+# ============================================================
+# 硬件控制配置（增补卷十四 + 进化卷六）
+# ============================================================
+hardware:
+  # 场景模式: computer / stage / hotel / meeting
+  default_scene: computer
+  # 协议配置
+  protocols:
+    tcp:
+      enabled: true
+      timeout: 5
+    mqtt:
+      enabled: true
+      broker: "localhost"
+      port: 1883
+    modbus:
+      enabled: true
+      mode: tcp  # tcp / rtu
+    serial:
+      enabled: true
+      default_port: "COM3"  # Windows, /dev/ttyUSB0 on Linux
+      baudrate: 9600
+    dmx512:
+      enabled: false  # 需外接USB-DMX转换器
+      device_path: null
+  # 物理急停按钮支持
+  emergency_stop:
+    enabled: true
+    # USB HID急停按钮设备VID/PID
+    device_vid: null
+    device_pid: null
+
+# 开发配置
+development:
+  debug_mode: false
+  skip_wake_word: false
+  dry_run: false
+  # 静默模式（适合舞台大屏）
+  silent_mode: false
+  # 详细汇报模式（适合新手）
+  verbose_mode: true
