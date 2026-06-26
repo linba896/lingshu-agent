@@ -1,1 +1,55 @@
-...
+# 灵枢 Agent 构建产物
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# 日志与临时文件
+logs/*.log
+logs/*.jpg
+logs/*.png
+*.log
+*.tmp
+.tmp-push/
+
+# 配置文件与用户隐私数据（不提交仓库）
+config/.auth_encrypted
+config/auth/*.jsonl
+config/speaker_profiles/*.json
+config/evolution/*.json
+knowledge/vector_db/
+knowledge/action_records/*.json
+
+# 模型文件（太大，通常通过 download_models.py 下载）
+models/
+
+# 虚拟环境
+python/
+venv/
+.venv/
+env/
+
+# 打包 wheels（可选提交）
+wheels/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# 操作系统
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 测试缓存
+.pytest_cache/
+.coverage
+htmlcov/
+
+# 环境变量
+.env
+.env.local
