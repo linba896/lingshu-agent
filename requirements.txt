@@ -10,16 +10,15 @@ rich>=13.0.0          # 终端美化输出
 loguru>=0.7.0         # 日志管理
 
 # --- 语音模块 (Phase 2) ---
-# openai-whisper>=20231117   # ASR（按需安装，体积较大）
-# faster-whisper>=1.0.0      # 加速版Whisper（可选）
-# webrtcvad>=2.0.10          # 语音活动检测（VAD）
-# sounddevice>=0.4.6         # 麦克风录音
-# numpy>=1.24.0              # 音频处理依赖
+faster-whisper>=1.0.0      # 加速版Whisper ASR（推荐，比openai-whisper快4倍）
+webrtcvad>=2.0.10          # 语音活动检测（VAD）
+sounddevice>=0.4.6         # 麦克风录音
+numpy>=1.24.0              # 音频处理依赖
+scipy>=1.10.0              # 音频信号处理（VAD后处理）
+transformers>=4.40.0       # NLU模型加载（HuggingFace）
+torch>=2.2.0               # PyTorch推理后端（2.5GB+，按需安装）
 
 # --- 视觉模块 (Phase 3) ---
-# transformers>=4.40.0       # Hugging Face 模型加载
-# torch>=2.2.0               # PyTorch 推理后端（体积极大）
-# torchvision>=0.17.0
 # qwen-vl-utils>=0.0.2      # Qwen-VL 工具包
 # Pillow>=10.0.0             # 截图处理
 # mss>=9.0.1                 # 跨平台截图库
@@ -46,4 +45,9 @@ black>=24.0.0
 # 1. 在有网络的环境中运行：pip download -r requirements.txt -d wheels/
 # 2. 将 wheels/ 目录复制到U盘
 # 3. 在目标机器运行：pip install --no-index --find-links=wheels/ -r requirements.txt
+#
+# 注：torch 体积巨大（~2GB），建议单独下载或使用 CPU 版本：
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+# 或离线：
+#   pip download torch torchvision --index-url https://download.pytorch.org/whl/cpu -d wheels/
 # ============================================================

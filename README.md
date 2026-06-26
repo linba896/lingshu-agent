@@ -67,8 +67,8 @@ lingshu-agent/
 
 | 阶段 | 任务 | 周期 | 状态 |
 |------|------|------|------|
-| **Phase 1** | 载体搭建：U盘环境、启动脚本、离线依赖 | 1-2周 | 🚧 进行中 |
-| **Phase 2** | 语音模块：ASR + 意图理解 | 2-3周 | ⏳ 待启动 |
+| **Phase 1** | 载体搭建：U盘环境、启动脚本、离线依赖 | 1-2周 | ✅ 已完成 |
+| **Phase 2** | 语音模块：ASR + NLU + VAD + 唤醒词 | 2-3周 | 🚧 进行中 |
 | **Phase 3** | 视觉模块：屏幕截图 + VLM | 3-4周 | ⏳ 待启动 |
 | **Phase 4** | 执行模块：键鼠模拟 + 安全确认 | 2-3周 | ⏳ 待启动 |
 | **Phase 5** | 学习模块：录制回放 + 向量库 | 3-4周 | ⏳ 待启动 |
@@ -80,8 +80,8 @@ lingshu-agent/
 
 | 模块 | 技术选型 | 模型/工具 |
 |------|----------|-----------|
-| 语音转文字 | ASR | Whisper-tiny / WeNet |
-| 意图理解 | LLM + LoRA | Qwen2.5-1.5B / Phi-3 Mini |
+| 语音转文字 | ASR | faster-whisper / Whisper-tiny (VAD + 流式录音) |
+| 意图理解 | LLM + 规则回退 | Qwen2.5-1.5B-Instruct / 正则解析 |
 | 屏幕理解 | VLM | Qwen3-VL-8B-Instruct |
 | 键鼠执行 | 跨平台自动化 | pyauto-desktop / askui |
 | 记忆存储 | 向量数据库 | ChromaDB / SQLite-vec |
