@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-灵枢·多智能体协同模块（进化卷核心）
+灵枢·多智能体协调器（进化卷三）
 核心概念：Expert Panel（专家面板）+ Skill Decentralization（技能去中心化）
-实现多智能体协同、技能去中心化、群体智慧
-
+实现多智能体协同处理复杂任务
 """
 
 import json
@@ -19,12 +18,12 @@ from typing import List, Dict, Optional, Any, Callable
 
 @dataclass
 class AgentTask:
-    """智能体任务"""
+    """任务描述"""
     id: str
     type: str  # 'query', 'analysis', 'creation', 'control', 'validation'
     description: str
     context: Dict[str, Any]
-    priority: int = 5  # 1-10, 10=最高优先级
+    priority: int = 5  # 1-10, 10最高
     deadline: Optional[str] = None
     status: str = "pending"  # pending, assigned, processing, completed, failed
     result: Optional[str] = None
@@ -32,7 +31,7 @@ class AgentTask:
 
 @dataclass
 class AgentMessage:
-    """智能体消息"""
+    """智能体间消息"""
     from_agent: str
     to_agent: str
     type: str  # 'request', 'response', 'broadcast', 'alert'
@@ -42,36 +41,36 @@ class AgentMessage:
 
 
 class BaseAgent(ABC):
-    """基础智能体"""
+    """所有专家智能体的基类"""
     
     def __init__(self, name: str, specialty: str, description: str):
         self.name = name
         self.specialty = specialty
         self.description = description
         self.status = "idle"  # idle, busy, offline
-        self.memory: List[Dict] = []  # 记忆存储
+        self.memory: List[Dict] = []  # 工作记忆
         self._message_queue: List[AgentMessage] = []
         self._lock = threading.Lock()
     
     @abstractmethod
     def process(self, task: AgentTask) -> str:
-        """处理任务"""
+        """处理任务，返回结果"""
         pass
     
     def receive_message(self, msg: AgentMessage):
-        """接收消息"""
+        """接收来自其他智能体的消息"""
         with self._lock:
             self._message_queue.append(msg)
     
     def get_messages(self) -> List[AgentMessage]:
-        """获取未读消息"""
+        """获取待处理消息"""
         with self._lock:
             msgs = self._message_queue.copy()
             self._message_queue.clear()
             return msgs
     
     def add_memory(self, entry: Dict):
-        """添加记忆"""
+        """添加记忆条目"""
         self.memory.append({
             **entry,
             "timestamp": datetime.now().isoformat(),
@@ -82,20 +81,20 @@ class BaseAgent(ABC):
 
 
 class VisualMasterAgent(BaseAgent):
-    """视觉大师：PPT设计、海报制作、图片生成、视频剪辑"""
+    """视觉大师：负责视觉创作、设计、审美"""
     
     def __init__(self):
         super().__init__(
             name="视觉大师",
             specialty="visual",
-            description="PPT设计、海报制作、图片生成、视频剪辑、配色方案、排版设计",
+            description="负责视觉生成、海报设计、PPT制作、图片优化",
         )
     
     def process(self, task: AgentTask) -> str:
         self.status = "busy"
         try:
             desc = task.description.lower()
-            if "ppt" in desc or "演示" in desc or "presentation" in desc:
+            if "ppt" in desc or "幻灯片" in desc or "presentation" in desc:
                 result = self._make_ppt(task)
             elif "海报" in desc or "poster" in desc or "banner" in desc:
                 result = self._make_poster(task)
@@ -103,9 +102,8 @@ class VisualMasterAgent(BaseAgent):
                 result = self._generate_image(task)
             else:
                 result = f"[视觉大师] 收到视觉任务: {task.description}\n" \
-                        "➡️ 分析: 需要设计排版、配色方案\n" \
-                        "➡️ 建议: 使用PPT模板或设计工具\n" \
-                        "➡️ 输出: 生成视觉素材（图片/视频/动画）"
+                        "→ 分析视觉需求 → 构思构图 → 生成视觉方案\n" \
+                        "→ 输出: 视觉设计草图已生成（模拟）"
             
             self.add_memory({
                 "task_id": task.id,
@@ -117,51 +115,46 @@ class VisualMasterAgent(BaseAgent):
             self.status = "idle"
     
     def _make_ppt(self, task: AgentTask) -> str:
-        topic = task.context.get("topic", "未命名主题")
+        topic = task.context.get("topic", "未指定主题")
         return f"[PPT制作] 主题: {topic}\n" \
-               "1. 封面设计：主题 + 副标题 + 图片\n" \
-               "2. 目录页：章节导航\n" \
-               "3. 内容页：要点 + 图表 + 动画\n" \
-               "4. 结尾页：总结 + 致谢\n" \
-               "➡️ 执行: 打开PowerPoint并创建新演示文稿"
+               "1. 设计封面页（主标题 + 副标题 + 视觉焦点）\n" \
+               "2. 目录页（结构化大纲）\n" \
+               "3. 内容页（图表 + 要点）\n" \
+               "4. 总结页\n" \
+               "→ 输出: PPT 结构方案已生成，待填充具体内容"
     
     def _make_poster(self, task: AgentTask) -> str:
-        return f"[海报制作] {task.description}\n" \
-               "➡️ 设计: 主题突出、视觉对比、信息层次\n" \
-               "➡️ 输出: 生成海报图片（PNG/JPG）"
+        return f"[海报设计] {task.description}\n" \
+               "→ 选择配色方案 → 设计排版 → 添加视觉元素 → 输出高清海报"
     
     def _generate_image(self, task: AgentTask) -> str:
-        return f"[图片生成] {task.description}\n" \
-               "➡️ 分析: 风格、色调、构图\n" \
-               "➡️ 生成: AI绘画工具（如Midjourney/Stable Diffusion）\n" \
-               "➡️ 输出: 高清图片"
+        return f"[图像生成] {task.description}\n" \
+               "→ 分析描述 → 生成提示词 → 调用图像模型 → 输出图像"
 
 
 class DataStewardAgent(BaseAgent):
-    """数据管家：Excel处理、数据分析、图表生成、SQL查询、数据清洗"""
+    """数据管家：负责数据治理、表格管理、流程优化"""
     
     def __init__(self):
         super().__init__(
             name="数据管家",
             specialty="data",
-            description="Excel处理、数据分析、图表生成、SQL查询、数据清洗、报表生成",
+            description="负责数据整理、表格优化、流程自动化、数据质量检查",
         )
     
     def process(self, task: AgentTask) -> str:
         self.status = "busy"
         try:
             desc = task.description.lower()
-            if "excel" in desc or "表格" in desc or "sheet" in desc:
+            if "表格" in desc or "excel" in desc or "sheet" in desc:
                 result = self._process_spreadsheet(task)
             elif "数据" in desc or "data" in desc:
                 result = self._analyze_data(task)
-            elif "图表" in desc or "可视化" in desc or "workflow" in desc:
+            elif "流程" in desc or "workflow" in desc or "自动化" in desc:
                 result = self._optimize_workflow(task)
             else:
-                result = f"[数据管家] 收到数据任务: {task.description}\n" \
-                        "➡️ 分析: 数据类型、数据来源、处理流程\n" \
-                        "➡️ 建议: 使用Excel/数据库/BI工具\n" \
-                        "➡️ 输出: 数据报告、图表、洞察"
+                result = f"[数据管家] 收到数据处理任务: {task.description}\n" \
+                        "→ 数据清洗 → 结构化整理 → 质量验证 → 输出标准化数据"
             
             self.add_memory({
                 "task_id": task.id,
@@ -173,36 +166,30 @@ class DataStewardAgent(BaseAgent):
             self.status = "idle"
     
     def _process_spreadsheet(self, task: AgentTask) -> str:
-        return f"[Excel处理] {task.description}\n" \
-               "1. 数据读取：打开Excel文件\n" \
-               "2. 数据清洗：去重、填充、格式转换\n" \
-               "3. 公式计算：SUM/AVERAGE/VLOOKUP\n" \
-               "4. 图表生成：柱状图/折线图/饼图\n" \
-               "5. 输出报告：PDF/邮件/分享链接"
+        return f"[表格处理] {task.description}\n" \
+               "1. 读取数据源\n" \
+               "2. 数据清洗（去重、格式标准化）\n" \
+               "3. 公式计算与验证\n" \
+               "4. 条件格式与可视化\n" \
+               "5. 输出优化后的表格"
     
     def _analyze_data(self, task: AgentTask) -> str:
         return f"[数据分析] {task.description}\n" \
-               "➡️ 分析: 数据分布、趋势、异常值\n" \
-               "➡️ 统计: 描述统计、相关性分析\n" \
-               "➡️ 可视化: 图表、仪表盘、报告\n" \
-               "➡️ 洞察: 业务建议、预测模型"
+               "→ 统计描述 → 趋势分析 → 异常检测 → 生成分析报告"
     
     def _optimize_workflow(self, task: AgentTask) -> str:
         return f"[流程优化] {task.description}\n" \
-               "➡️ 分析: 现有流程瓶颈\n" \
-               "➡️ 设计: 新流程方案\n" \
-               "➡️ 自动化: 脚本/工具实现\n" \
-               "➡️ 验证: 效果评估"
+               "→ 现状分析 → 瓶颈识别 → 自动化方案 → 效率提升报告"
 
 
 class StageDirectorAgent(BaseAgent):
-    """舞台导演：灯光控制、音响控制、场景切换、特效管理、演出编排"""
+    """舞台导演：负责酒店/舞台场景控制、灯光编排、氛围调度"""
     
     def __init__(self, hardware_controller=None):
         super().__init__(
             name="舞台导演",
             specialty="stage",
-            description="DMX灯光控制、音响管理、场景切换、特效编排、演出控制、舞台调度",
+            description="负责舞台场景设计、灯光编排、氛围控制、演出调度",
         )
         self.hardware = hardware_controller
     
@@ -212,15 +199,13 @@ class StageDirectorAgent(BaseAgent):
             desc = task.description.lower()
             if "灯光" in desc or "lighting" in desc or "dmx" in desc:
                 result = self._design_lighting(task)
-            elif "场景" in desc or "scene" in desc or "切换" in desc:
+            elif "场景" in desc or "scene" in desc or "氛围" in desc:
                 result = self._setup_scene(task)
-            elif "演出" in desc or "show" in desc or "表演" in desc:
+            elif "演出" in desc or "show" in desc or "performance" in desc:
                 result = self._plan_show(task)
             else:
                 result = f"[舞台导演] 收到舞台任务: {task.description}\n" \
-                        "➡️ 分析: 灯光设计、音响配置、场景编排\n" \
-                        "➡️ 建议: 使用DMX控制器、音响调音台\n" \
-                        "➡️ 输出: 演出方案、灯光脚本、音响配置"
+                        "→ 分析场景需求 → 设计灯光方案 → 编排节奏 → 输出控制指令"
             
             self.add_memory({
                 "task_id": task.id,
@@ -232,7 +217,7 @@ class StageDirectorAgent(BaseAgent):
             self.status = "idle"
     
     def _design_lighting(self, task: AgentTask) -> str:
-        # 通过硬件控制器发送DMX命令
+        # 实际中应调用 hardware controller 发送 DMX 指令
         cues = [
             {"time": 0, "channel": 1, "value": 255, "desc": "主光全开"},
             {"time": 5, "channel": 2, "value": 180, "desc": "侧光暖色"},
@@ -243,33 +228,30 @@ class StageDirectorAgent(BaseAgent):
                 self.hardware.send_dmx({cue["channel"]: cue["value"]})
         
         return f"[灯光设计] {task.description}\n" + "\n".join(
-            f"  T+{c['time']}s: Ch{c['channel']}={c['value']} ({c['desc']})"
-            for c in cues
-        ) + "\n➡️ 执行: 通过DMX控制器发送灯光指令"
+            f"  T+{c['time']}s: Ch{c['channel']}={c['value']} ({c['desc']})" for c in cues
+        ) + "\n→ 灯光方案已生成并发送至控制器"
     
     def _setup_scene(self, task: AgentTask) -> str:
         scene_type = task.context.get("scene_type", "general")
-        return f"[场景切换] 场景类型: {scene_type}\n" \
-               "➡️ 分析: 灯光预设、音响配置、特效准备\n" \
-               "➡️ 切换: 渐变过渡、时间同步\n" \
-               "➡️ 验证: 设备状态检查"
+        return f"[场景设置] 类型: {scene_type}\n" \
+               "→ 灯光预设加载 → 音响设备检查 → 环境传感器校准 → 场景就绪"
     
     def _plan_show(self, task: AgentTask) -> str:
         return f"[演出编排] {task.description}\n" \
-               "1. 开场：灯光渐亮 + 音乐渐入\n" \
-               "2. 高潮：灯光闪烁 + 特效触发\n" \
-               "3. 转场：灯光切换 + 音乐过渡\n" \
-               "4. 结尾：灯光渐暗 + 音乐淡出"
+               "1. 开场：渐亮 → 音乐起\n" \
+               "2. 发展：灯光变化配合情节\n" \
+               "3. 高潮：全亮 + 特效\n" \
+               "4. 结尾：渐暗 → 谢幕"
 
 
 class HardwareControllerAgent(BaseAgent):
-    """硬件控制器：通用设备控制、协议管理、状态监控、紧急停止"""
+    """硬件控制器：负责设备管理、协议转换、紧急控制"""
     
     def __init__(self, hardware_controller=None):
         super().__init__(
             name="硬件控制器",
             specialty="hardware",
-            description="通用设备控制、协议管理、状态监控、紧急停止、设备发现、固件更新",
+            description="负责设备状态监控、协议管理、紧急停止、安全控制",
         )
         self.hardware = hardware_controller
         self.emergency_status = False
@@ -278,17 +260,15 @@ class HardwareControllerAgent(BaseAgent):
         self.status = "busy"
         try:
             desc = task.description.lower()
-            if "停止" in desc or "emergency" in desc or "急停" in desc:
+            if "紧急" in desc or "emergency" in desc or "停止" in desc:
                 result = self._emergency_stop(task)
-            elif "设备" in desc or "device" in desc or "连接" in desc:
+            elif "设备" in desc or "device" in desc or "状态" in desc:
                 result = self._check_devices(task)
-            elif "协议" in desc or "protocol" in desc or "通信" in desc:
+            elif "协议" in desc or "protocol" in desc or "连接" in desc:
                 result = self._manage_protocol(task)
             else:
                 result = f"[硬件控制器] 收到硬件任务: {task.description}\n" \
-                        "➡️ 分析: 设备类型、协议选择、通信参数\n" \
-                        "➡️ 建议: 使用TCP/Modbus/Serial/DMX512\n" \
-                        "➡️ 输出: 设备控制指令、状态反馈"
+                        "→ 设备识别 → 协议匹配 → 指令发送 → 状态确认"
             
             self.add_memory({
                 "task_id": task.id,
@@ -303,11 +283,11 @@ class HardwareControllerAgent(BaseAgent):
         self.emergency_status = True
         if self.hardware:
             self.hardware.emergency_stop()
-        return "🚨🚨🚨 紧急停止！所有设备已关闭！\n" \
-               "➡️ 灯光: 全部关闭\n" \
-               "➡️ 音响: 静音\n" \
-               "➡️ 电机: 停止\n" \
-               "➡️ 安全: 进入安全模式"
+        return "🚨 [紧急停止] 所有硬件输出已切断！\n" \
+               "→ 灯光: 关闭\n" \
+               "→ 音响: 静音\n" \
+               "→ 电机: 停止\n" \
+               "→ 系统进入安全状态"
     
     def _check_devices(self, task: AgentTask) -> str:
         if self.hardware:
@@ -315,28 +295,19 @@ class HardwareControllerAgent(BaseAgent):
             scene = self.hardware.get_scene()
             return f"[设备状态] 当前场景: {scene}\n" \
                    f"可用协议: {', '.join(protocols)}\n" \
-                   f"设备状态: 正常\n" \
-                   "连接状态: 良好"
-        return "[设备状态] 硬件控制器未初始化\n"
+                   "所有设备运行正常"
+        return "[设备状态] 硬件控制器未连接"
     
     def _manage_protocol(self, task: AgentTask) -> str:
         protocol = task.context.get("protocol", "TCP")
         return f"[协议管理] 协议: {protocol}\n" \
-               "➡️ 分析: 设备兼容性、通信速率\n" \
-               "➡️ 配置: 波特率、数据位、校验位\n" \
-               "➡️ 测试: 通信测试、数据验证\n" \
-               "➡️ 监控: 实时状态、故障检测"
+               "→ 连接建立 → 心跳检测 → 指令测试 → 连接稳定"
 
 
 class MultiAgentCoordinator:
     """
-    多智能体协调器
-    
-    管理多个专业智能体，实现协同工作：
-    - 任务分配：根据任务类型分配给合适的智能体
-    - 消息传递：智能体之间的通信机制
-    - 群体决策：多智能体投票/共识机制
-    - 负载均衡：根据智能体状态分配任务
+    多智能体协调器：Expert Panel 的核心调度器
+    负责任务分发、智能体间通信、结果汇总
     """
     
     def __init__(self, root: Path, config: Optional[Dict] = None, hardware_controller=None):
@@ -347,42 +318,37 @@ class MultiAgentCoordinator:
         self.message_bus: List[AgentMessage] = []
         self._lock = threading.Lock()
         
-        # 注册专家智能体
+        # 注册默认专家
         self.register_agent(VisualMasterAgent())
         self.register_agent(DataStewardAgent())
         self.register_agent(StageDirectorAgent(hardware_controller))
         self.register_agent(HardwareControllerAgent(hardware_controller))
     
     def register_agent(self, agent: BaseAgent):
-        """注册智能体"""
+        """注册专家智能体"""
         self.agents[agent.name] = agent
     
     def unregister_agent(self, name: str):
-        """注销智能体"""
+        """注销专家"""
         if name in self.agents:
             del self.agents[name]
     
     def dispatch(self, task: AgentTask) -> Dict[str, str]:
         """
-        分发任务到合适的智能体
-        
-        路由策略：
-        - visual → 视觉大师
-        - data → 数据管家
-        - stage → 舞台导演
-        - hardware → 硬件控制器
-        - query → 视觉大师/数据管家（多智能体协作）
+        任务分发：根据任务类型选择最合适的专家
+        返回: {agent_name: result}
         """
+        # 任务路由映射
         routing_map = {
             "visual": ["视觉大师"],
             "data": ["数据管家"],
             "stage": ["舞台导演", "硬件控制器"],
             "hardware": ["硬件控制器"],
-            "query": ["数据管家", "视觉大师"],  # 查询类任务需要多智能体协作
+            "query": ["数据管家", "视觉大师"],  # 查询类可多专家
             "analysis": ["数据管家"],
             "creation": ["视觉大师"],
             "control": ["硬件控制器", "舞台导演"],
-            "validation": ["数据管家"],  # 验证类任务需要数据管家
+            "validation": ["数据管家"],  # 验证由数据管家负责
         }
         
         candidates = routing_map.get(task.type, list(self.agents.keys()))
@@ -396,7 +362,7 @@ class MultiAgentCoordinator:
                         result = agent.process(task)
                         results[agent_name] = result
                         
-                        # 发送消息通知
+                        # 发送完成消息
                         msg = AgentMessage(
                             from_agent=agent_name,
                             to_agent="coordinator",
@@ -418,12 +384,7 @@ class MultiAgentCoordinator:
     
     def collaborate(self, task_description: str, involved_agents: List[str], context: Dict) -> Dict[str, str]:
         """
-        多智能体协作
-        
-        多个智能体共同完成一个复杂任务：
-        - 每个智能体处理子任务
-        - 结果汇总到协调器
-        - 协调器生成最终报告
+        多智能体协作：多个专家共同完成一个复杂任务
         """
         task = AgentTask(
             id=f"collab_{int(time.time())}_{hash(task_description) % 10000}",
@@ -434,21 +395,21 @@ class MultiAgentCoordinator:
         )
         
         results = {}
-        # 并行分发子任务
+        # 第一阶段：各自专家处理
         for name in involved_agents:
             if name in self.agents:
                 agent = self.agents[name]
                 sub_task = AgentTask(
                     id=f"{task.id}_{name}",
                     type=agent.specialty,
-                    description=f"[子任务] {task_description}",
+                    description=f"[协作任务] {task_description}",
                     context=context,
                     priority=8,
                 )
                 results[name] = agent.process(sub_task)
         
-        # 汇总结果（简化：拼接所有结果）
-        summary = f"## 多智能体协作结果\n\n任务: {task_description}\n\n"
+        # 第二阶段：结果汇总（实际中可由 LLM 进行智能汇总）
+        summary = f"## 协作任务结果汇总\n\n原始需求: {task_description}\n\n"
         for name, result in results.items():
             summary += f"### {name}\n{result}\n\n"
         
@@ -456,7 +417,7 @@ class MultiAgentCoordinator:
         return results
     
     def broadcast(self, from_agent: str, content: str, task_id: Optional[str] = None):
-        """广播消息到所有智能体"""
+        """广播消息给所有智能体"""
         msg = AgentMessage(
             from_agent=from_agent,
             to_agent="broadcast",
@@ -471,27 +432,109 @@ class MultiAgentCoordinator:
             agent.receive_message(msg)
     
     def get_system_status(self) -> Dict:
-        """获取系统状态"""
+        """获取所有智能体状态"""
         return {
             "agents": {
                 name: {
-                    "status": agent.status,
                     "specialty": agent.specialty,
+                    "status": agent.status,
                     "memory_size": len(agent.memory),
                     "pending_messages": len(agent._message_queue),
                 }
                 for name, agent in self.agents.items()
             },
-            "task_queue": len(self.task_history),
-            "message_bus": len(self.message_bus),
-            "recent_tasks": [
-                {
-                    "id": t.id,
-                    "type": t.type,
-                    "status": t.status,
-                    "description": t.description[:50],
-                }
-                for t in self.task_history[-10:]
-            ],
+            "total_tasks": len(self.task_history),
+            "completed_tasks": len([t for t in self.task_history if t.status == "completed"]),
+            "message_bus_size": len(self.message_bus),
         }
+    
+    def save_state(self):
+        """保存协调器状态"""
+        state_file = self.root / "config" / "multi_agent_state.json"
+        state_file.parent.mkdir(parents=True, exist_ok=True)
+        state = {
+            "agents": {name: {
+                "specialty": a.specialty,
+                "status": a.status,
+                "memory_count": len(a.memory),
+            } for name, a in self.agents.items()},
+            "task_count": len(self.task_history),
+            "saved_at": datetime.now().isoformat(),
+        }
+        with open(state_file, "w", encoding="utf-8") as f:
+            json.dump(state, f, ensure_ascii=False, indent=2)
 
+
+# 便捷接口：用户可以直接调用的函数
+
+def quick_visual_task(coordinator: MultiAgentCoordinator, description: str, context: Dict = None) -> str:
+    """快速视觉任务"""
+    task = AgentTask(
+        id=f"quick_{int(time.time())}",
+        type="visual",
+        description=description,
+        context=context or {},
+        priority=7,
+    )
+    results = coordinator.dispatch(task)
+    return results.get("视觉大师", "视觉专家未响应")
+
+
+def quick_data_task(coordinator: MultiAgentCoordinator, description: str, context: Dict = None) -> str:
+    """快速数据任务"""
+    task = AgentTask(
+        id=f"quick_{int(time.time())}",
+        type="data",
+        description=description,
+        context=context or {},
+        priority=7,
+    )
+    results = coordinator.dispatch(task)
+    return results.get("数据管家", "数据专家未响应")
+
+
+def quick_stage_task(coordinator: MultiAgentCoordinator, description: str, context: Dict = None) -> str:
+    """快速舞台任务"""
+    task = AgentTask(
+        id=f"quick_{int(time.time())}",
+        type="stage",
+        description=description,
+        context=context or {},
+        priority=9,
+    )
+    results = coordinator.dispatch(task)
+    return results.get("舞台导演", "舞台专家未响应")
+
+
+if __name__ == "__main__":
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmpdir:
+        coord = MultiAgentCoordinator(Path(tmpdir))
+        
+        # 测试单任务分发
+        print("=" * 60)
+        print("测试: 视觉任务")
+        print("=" * 60)
+        result = quick_visual_task(coord, "制作一个关于AI的PPT")
+        print(result)
+        
+        print("\n" + "=" * 60)
+        print("测试: 数据任务")
+        print("=" * 60)
+        result = quick_data_task(coord, "分析销售数据表格")
+        print(result)
+        
+        print("\n" + "=" * 60)
+        print("测试: 多智能体协作")
+        print("=" * 60)
+        results = coord.collaborate(
+            "设计一场科技发布会舞台",
+            ["视觉大师", "舞台导演", "硬件控制器"],
+            {"venue": "酒店宴会厅", "audience": 200},
+        )
+        print(results.get("_summary", "无汇总"))
+        
+        print("\n" + "=" * 60)
+        print("系统状态")
+        print("=" * 60)
+        print(json.dumps(coord.get_system_status(), ensure_ascii=False, indent=2))
