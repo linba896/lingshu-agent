@@ -37,6 +37,7 @@ def _find_model_path(model_path: str, root: Path) -> Optional[Path]:
     p = Path(model_path)
     if p.is_absolute():
         return p if p.exists() else None
+    # 相对灵枢根目录
     p = root / model_path
     return p if p.exists() else None
 
@@ -78,6 +79,44 @@ class VADRecorder:
 
     def is_available(self) -> bool:
         return self._available
+
+    def _record_frames(
+        self,
+        duration: float,
+        on_frame: Callable[[bytes], bool],
+        stop_event: Optional[threading.Event] = None,
+    ) -> bool:
+        """
+        录音指定时长，每帧回调 on_frame(frame)
+        on_frame 返回 True 表示继续录音，False 表示停止
+        """
+        import sounddevice as sd
+
+        frames = []
+        start_time = time.time()
+
+        def callback(indata, frame_count, time_info, status):
+            if status:
+                print(f"[VAD] 录音状态: {status}")
+            frames.append(indata.copy())
+
+        # 使用阻塞式录音
+        num_frames = int(duration * self.sample_rate / self.frame_size)
+        for _ in range(num_frames):
+            if stop_event and stop_event.is_set():
+                break
+            frame = sd.rec(
+                self.frame_size,
+                samplerate=self.sample_rate,
+                channels=1,
+                dtype="int16",
+                blocking=True,
+            )
+            frame_bytes = frame.tobytes()
+            if not on_frame(frame_bytes):
+                break
+
+        return True
 
     def record_until_silence(
         self,
@@ -194,6 +233,7 @@ class WhisperASR:
             model_path = _find_model_path(self.model_path, self.root)
 
             if model_path is None:
+                # 尝试使用模型名称（在线下载或缓存）
                 model_path = self.model_path
                 print(f"[ASR] 未找到本地模型，尝试在线加载或缓存: {model_path}")
             else:
@@ -228,13 +268,14 @@ class WhisperASR:
         import numpy as np
 
         try:
+            # bytes → numpy float32
             audio_array = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32) / 32768.0
 
             segments, info = self._model.transcribe(
                 audio_array,
                 language=self.language if self.language != "auto" else None,
                 beam_size=5,
-                vad_filter=True,
+                vad_filter=True,  # 使用 faster-whisper 内置 VAD 过滤
                 vad_parameters=dict(min_silence_duration_ms=500),
             )
 
@@ -372,6 +413,7 @@ class NLUProcessor:
             prompt = self.INTENT_PROMPT.format(text=text)
             messages = [{"role": "user", "content": prompt}]
 
+            # 使用 chat template（如果支持）
             if hasattr(self._tokenizer, "apply_chat_template"):
                 prompt_text = self._tokenizer.apply_chat_template(
                     messages,
@@ -384,6 +426,7 @@ class NLUProcessor:
             outputs = self._pipeline(prompt_text)
             generated = outputs[0]["generated_text"]
 
+            # 提取 JSON
             result = self._extract_json(generated)
             result["raw_text"] = text
             result["source"] = "llm"
@@ -397,6 +440,7 @@ class NLUProcessor:
         """基于规则的正则解析（降级方案）"""
         text_lower = text.lower()
 
+        # 意图识别规则
         rules = [
             (r"打开|启动|运行|开启", "open"),
             (r"关闭|退出|关掉|结束", "close"),
@@ -415,6 +459,7 @@ class NLUProcessor:
                 intent = intent_type
                 break
 
+        # 目标提取（简单启发式）
         target = ""
         software_names = [
             "photoshop", "ps", "ppt", "powerpoint", "excel", "word",
@@ -428,11 +473,13 @@ class NLUProcessor:
                 target = name
                 break
 
+        # 如果没找到软件名，尝试提取引号内容或后面的名词
         if not target:
-            match = re.search(r'["'](.+?)["']', text)
+            match = re.search(r'[\"'](.+?)[\"']', text)
             if match:
                 target = match.group(1)
             else:
+                # 提取动词后的名词短语
                 match = re.search(r'(?:打开|启动|关闭|点击|输入|搜索|查找|查看|运行)\s*([\u4e00-\u9fa5a-zA-Z0-9_\-]+)', text_lower)
                 if match:
                     target = match.group(1)
@@ -449,11 +496,14 @@ class NLUProcessor:
     @staticmethod
     def _extract_json(text: str) -> Dict:
         """从 LLM 输出中提取 JSON"""
+        # 尝试直接找到 JSON 块
         try:
+            # 先尝试直接解析整个文本
             return json.loads(text)
         except json.JSONDecodeError:
             pass
 
+        # 尝试提取 ```json 代码块
         code_match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', text, re.DOTALL)
         if code_match:
             try:
@@ -461,6 +511,7 @@ class NLUProcessor:
             except json.JSONDecodeError:
                 pass
 
+        # 尝试提取最外层的大括号
         brace_match = re.search(r'\{.*\}', text, re.DOTALL)
         if brace_match:
             try:
@@ -468,6 +519,7 @@ class NLUProcessor:
             except json.JSONDecodeError:
                 pass
 
+        # 兜底：返回未知意图
         return {"intent": "unknown", "target": "", "params": {}, "confidence": 0.0}
 
 
@@ -493,12 +545,14 @@ class VoiceModule:
         self.nlu_config = nlu_config or {}
         self.root = root
 
+        # 配置项
         self.wake_word = self.voice_config.get("wake_word", "灵枢")
         self.skip_wake_word = self.voice_config.get("skip_wake_word", False)
         self.max_recording_seconds = self.voice_config.get("max_recording_seconds", 30)
         self.vad_sensitivity = self.voice_config.get("vad_sensitivity", 3)
         self.sample_rate = self.voice_config.get("sample_rate", 16000)
 
+        # 子模块
         self._vad: Optional[VADRecorder] = None
         self._asr: Optional[WhisperASR] = None
         self._nlu: Optional[NLUProcessor] = None
@@ -514,6 +568,7 @@ class VoiceModule:
         """初始化所有子模块"""
         print("[Voice] 初始化语音模块...")
 
+        # 1. VAD
         try:
             self._vad = VADRecorder(
                 sample_rate=self.sample_rate,
@@ -527,6 +582,7 @@ class VoiceModule:
         except Exception as e:
             print(f"[Voice] ⚠️ VAD 初始化失败: {e}")
 
+        # 2. ASR
         try:
             self._asr = WhisperASR(
                 model_path=self.asr_config.get("model_path", "tiny"),
@@ -542,6 +598,7 @@ class VoiceModule:
         except Exception as e:
             print(f"[Voice] ⚠️ ASR 初始化失败: {e}")
 
+        # 3. NLU
         try:
             nlu_path = self.nlu_config.get("model_path", "")
             if nlu_path:
@@ -558,11 +615,12 @@ class VoiceModule:
                     print(f"[Voice] ⚠️ NLU 不可用: {self._nlu._load_error}")
             else:
                 print("[Voice] NLU 模型路径未配置，仅使用规则解析")
-                self._nlu = NLUProcessor("", root=self.root)
+                self._nlu = NLUProcessor("", root=self.root)  # 规则模式
         except Exception as e:
             print(f"[Voice] ⚠️ NLU 初始化失败: {e}")
             self._nlu = NLUProcessor("", root=self.root)
 
+        # 判断整体就绪状态
         self._ready = (
             self._vad is not None and self._vad.is_available() and
             self._asr is not None and self._asr.is_available()
@@ -579,25 +637,33 @@ class VoiceModule:
         return self._ready
 
     def is_partial_ready(self) -> bool:
+        """ASR 可用但 VAD 不可用（可手动提供音频文件）"""
         return self._asr is not None and self._asr.is_available()
 
     def transcribe_audio(self, audio_bytes: bytes) -> Optional[str]:
+        """直接转录音频字节为文本"""
         if self._asr is None or not self._asr.is_available():
             return None
         return self._asr.transcribe(audio_bytes)
 
     def understand_intent(self, text: str) -> Dict:
+        """解析文本意图"""
         if self._nlu is None:
             return NLUProcessor._understand_with_rules(text)
         return self._nlu.understand(text)
 
     def process_text(self, text: str) -> Dict:
+        """
+        完整处理文本：唤醒词检测 → 意图理解
+        返回结构化指令
+        """
         result = {
             "text": text,
             "wake_word_detected": False,
             "intent": None,
         }
 
+        # 唤醒词检测
         if self.wake_word and not self.skip_wake_word:
             if self.wake_word.lower() in text.lower():
                 result["wake_word_detected"] = True
@@ -607,11 +673,16 @@ class VoiceModule:
                 result["intent"] = {"intent": "idle", "raw_text": text, "source": "wake_filter"}
                 return result
 
+        # 意图理解
         intent = self.understand_intent(text)
         result["intent"] = intent
         return result
 
     def record_and_transcribe(self, duration: Optional[float] = None) -> Optional[str]:
+        """
+        录音并转录为文本
+        duration: None 表示使用 VAD 自动检测，否则录制固定秒数
+        """
         if self._vad is None or not self._vad.is_available():
             print("[Voice] VAD 不可用，无法录音。请使用文本输入或提供音频文件。")
             return None
@@ -629,14 +700,22 @@ class VoiceModule:
         return self.transcribe_audio(audio)
 
     def record_and_understand(self, duration: Optional[float] = None) -> Optional[Dict]:
+        """
+        完整流程：录音 → 转录 → 意图理解
+        返回结构化指令
+        """
         text = self.record_and_transcribe(duration)
         if text is None:
             return None
 
-        print(f'[Voice] ASR 结果: "{text}"')
+        print(f"[Voice] ASR 结果: \"{text}\"")
         return self.process_text(text)
 
     def start_continuous_listening(self, callback: Callable[[Dict], None]):
+        """
+        启动持续监听模式（后台线程）
+        callback: 检测到意图时的回调函数
+        """
         if not self._ready:
             print("[Voice] 语音模块未就绪，无法启动监听")
             return
@@ -653,12 +732,14 @@ class VoiceModule:
         print("[Voice] 已启动持续监听模式（唤醒词 + VAD）")
 
     def stop_continuous_listening(self):
+        """停止持续监听"""
         self._stop_event.set()
         if self._listening_thread and self._listening_thread.is_alive():
             self._listening_thread.join(timeout=2)
         print("[Voice] 已停止监听")
 
     def _listening_loop(self):
+        """持续监听循环"""
         while not self._stop_event.is_set():
             try:
                 result = self.record_and_understand()
@@ -669,12 +750,14 @@ class VoiceModule:
                 time.sleep(0.5)
 
     def save_audio(self, audio_bytes: bytes, path: Path):
+        """将音频保存为 WAV 文件"""
         with wave.open(str(path), "wb") as wf:
             wf.setnchannels(1)
-            wf.setsampwidth(2)
+            wf.setsampwidth(2)  # 16-bit
             wf.setframerate(self.sample_rate)
             wf.writeframes(audio_bytes)
 
     def load_audio(self, path: Path) -> bytes:
+        """从 WAV 文件加载音频"""
         with wave.open(str(path), "rb") as wf:
             return wf.readframes(wf.getnframes())
