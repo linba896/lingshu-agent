@@ -1,53 +1,63 @@
 # ============================================================
 # 灵枢（LingShu）Agent — Python 依赖清单
-# 版本锁定，确保离线环境可复现
+# 版本：Phase 1-6 + 增补卷 + 进化卷
 # ============================================================
 
-# --- 核心运行时 ---
+# --- 基础运行时 ---
 pyyaml>=6.0
 click>=8.1.0
-rich>=13.0.0          # 终端美化输出
-loguru>=0.7.0         # 日志管理
+rich>=13.0.0
+loguru>=0.7.0
+gradio>=4.0.0              # GUI 面板（灵枢台）
+httpx>=0.24.0             # HTTP 请求（硬件控制/网络通信）
 
-# --- 语音模块 (Phase 2) ---
-faster-whisper>=1.0.0      # 加速版Whisper ASR（推荐，比openai-whisper快4倍）
-webrtcvad>=2.0.10          # 语音活动检测（VAD）
-sounddevice>=0.4.6         # 麦克风录音
-numpy>=1.24.0              # 音频处理依赖
-scipy>=1.10.0              # 音频信号处理（VAD后处理）
-transformers>=4.40.0       # NLU模型加载（HuggingFace）
-torch>=2.2.0               # PyTorch推理后端（2.5GB+，按需安装）
+# --- 语音交互 (Phase 2 + 增补卷声纹) ---
+faster-whisper>=1.0.0
+webrtcvad>=2.0.10
+sounddevice>=0.4.6
+numpy>=1.24.0
+scipy>=1.10.0
+transformers>=4.40.0
+torch>=2.2.0
+librosa>=0.10.0          # 声纹特征提取（MFCC）
+scikit-learn>=1.3.0      # 声纹相似度计算
+# paddlespeech>=0.8.0    # 声纹模型Ecapa-TDNN（可选，需较大依赖）
 
-# --- 视觉模块 (Phase 3) ---
-# qwen-vl-utils>=0.0.2      # Qwen-VL 工具包
-# Pillow>=10.0.0             # 截图处理
-# mss>=9.0.1                 # 跨平台截图库
+# --- 视觉理解 (Phase 3) ---
+# qwen-vl-utils>=0.0.2
+# Pillow>=10.0.0
+# mss>=9.0.1
 
-# --- 执行模块 (Phase 4) ---
-pyautogui>=0.9.54       # 键鼠模拟（备选）
-# pyauto-desktop>=0.1.0      # 跨显示器DPR支持（正式发布后替换）
-# askui>=0.20.0              # 多平台自动化（可选）
+# --- 执行操作 (Phase 4) ---
+pyautogui>=0.9.54
+# pyautodesktop>=0.1.0
+# askui>=0.20.0
 
-# --- 记忆模块 (Phase 5) ---
-chromadb>=0.5.0         # 向量数据库（可选）
-# sqlite-vec>=0.1.0          # SQLite 向量扩展（轻量备选）
-# sentence-transformers>=2.5.0 # 文本向量化（可选）
+# --- 记忆学习 (Phase 5) ---
+chromadb>=0.5.0
+# sqlite-vec>=0.1.0
+# sentence-transformers>=2.5.0
 
-# --- 系统监控 (观星术) ---
-psutil>=5.9.0           # CPU/内存/网络监控
+# --- 硬件控制 (增补卷硬件控制 + 进化卷) ---
+pyserial>=3.5          # RS-232/RS-485 串口通信
+pymodbus>=3.5.0        # Modbus/RTU协议Modbus/TCP
+paho-mqtt>=1.6.0        # MQTT 通信
+# pyusb>=1.2.0          # USB HID 设备（可选，需libusb）
 
-# --- 开发依赖 ---
+# --- 系统监控 (Phase 1 + 主动服务) ---
+psutil>=5.9.0
+
+# --- 测试工具 ---
 pytest>=8.0.0
 black>=24.0.0
 
 # ============================================================
-# 离线安装说明：
-# 1. 在有网络的环境中运行：pip download -r requirements.txt -d wheels/
-# 2. 将 wheels/ 目录复制到U盘
-# 3. 在目标机器运行：pip install --no-index --find-links=wheels/ -r requirements.txt
+# 安装说明（中国用户）：
+# 1. 使用国内镜像加速安装：pip download -r requirements.txt -d wheels/
+# 2. 在 wheels/ 目录离线安装
+# 3. 使用国内镜像源安装：pip install --no-index --find-links=wheels/ -r requirements.txt
 #
-# 注：torch 体积巨大（~2GB），建议单独下载或使用 CPU 版本：
-#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
-# 或离线：
-#   pip download torch torchvision --index-url https://download.pytorch.org/whl/cpu -d wheels/
+# 特定依赖安装建议（较大）：
+#    torch: pip download torch --index-url https://download.pytorch.org/whl/cpu -d wheels/
+#    transformers: 依赖torch，需先安装torch
 # ============================================================

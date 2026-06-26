@@ -1,29 +1,27 @@
 # ============================================================
-# 灵枢（LingShu）Agent — 主配置文件
-# 所有路径均支持相对路径（相对于灵枢根目录）
+# 灵枢（LingShu）Agent — 配置文件
+# 版本：白皮书 + 增补卷 + 进化卷
 # ============================================================
 
-# 基础配置
+# 应用配置
 app:
   name: "灵枢"
   name_en: "LingShu"
-  version: "0.1.0-alpha"
+  version: "0.2.0-evolution"
   # 日志级别: DEBUG, INFO, WARNING, ERROR
   log_level: INFO
   # 日志保留天数
-  log_retention_days: 7
+  log_retention_days: 30
 
 # 模型配置
 models:
-  # 语音识别模型（ASR）
   asr:
     model_path: "models/asr/whisper-tiny"
-    model_size: "tiny"       # tiny/base/small/medium/large
-    language: "zh"           # 自动检测可设为 "auto"
-    device: "cpu"            # cpu / cuda / mps
-    compute_type: "int8"     # int8 / float16 / float32
+    model_size: "tiny"
+    language: "zh"
+    device: "cpu"
+    compute_type: "int8"
 
-  # 意图理解模型（NLU）
   nlu:
     model_path: "models/nlu/qwen2.5-1.5b-lora"
     base_model: "Qwen/Qwen2.5-1.5B-Instruct"
@@ -31,38 +29,111 @@ models:
     max_tokens: 512
     temperature: 0.3
 
-  # 视觉语言模型（VLM）
   vlm:
     model_path: "models/vlm/qwen3-vl-8b"
     base_model: "Qwen/Qwen3-VL-8B-Instruct"
     device: "cpu"
-    compute_type: "fp8"      # fp8 / int8 / int4
-    # 截图频率（帧/秒）
+    compute_type: "fp8"
     screenshot_fps: 2
-    # 截图分辨率上限（减少显存/内存占用）
     max_resolution: [1920, 1080]
+
+  # 声纹模型配置（增补卷）
+  speaker:
+    model_path: "models/speaker/ecapa-tdnn"  # PaddleSpeech Ecapa-TDNN声纹模型
+    embedding_dim: 192
+    similarity_threshold: 0.85  # 声纹相似度阈值(0-1，建议0.85-0.95)
+    min_enroll_samples: 3        # 最少注册样本数
+
+  # 情感识别模型（进化卷）
+  emotion:
+    model_path: "models/emotion/wav2vec-emotion"
+    device: "cpu"
+    # 情感类别: neutral, happy, sad, angry, anxious, confused
 
 # 语音交互配置
 voice:
-  # 输入设备（默认系统默认麦克风）
   input_device: null
-  # 唤醒词
   wake_word: "灵枢"
-  # 语音活动检测（VAD）灵敏度
   vad_sensitivity: 3
-  # 录音采样率
   sample_rate: 16000
-  # 单次录音最大时长（秒）
   max_recording_seconds: 30
 
-# 执行控制配置
+# ============================================================
+# 授权管理配置（增补卷核心）
+# ============================================================
+auth:
+  # 授权文件路径（U盘/安全目录）
+  auth_file: "config/.auth_encrypted"
+  # 授权有效期（天），0=永久有效
+  auth_valid_days: 0
+  # 首次使用强制授权
+  require_first_auth: true
+  # 权限等级配置
+  permission_levels:
+    # 基础权限（1级）：文件浏览、网页搜索、程序启动
+    level_1:
+      - open
+      - click
+      - scroll
+      - type
+      - query
+    # 中级权限（2级）：文件修改、系统设置、程序控制（需声纹验证）
+    level_2:
+      - close
+      - delete_file
+      - delete_folder
+      - modify_system_settings
+      - execute_shell
+    # 高级权限（3级）：格式化、支付、网络配置（需声纹+人脸）
+    level_3:
+      - format_disk
+      - payment
+      - install_software
+      - network_config
+  # 访客模式允许的操作
+  guest_mode_actions:
+    - open
+    - click
+    - query
+    - screenshot
+  # 撤销操作超时（秒）
+  undo_timeout_seconds: 30
+
+# ============================================================
+# 声纹验证配置（增补卷）
+# ============================================================
+speaker:
+  # 声纹档案存储目录
+  profile_dir: "config/speaker_profiles"
+  # 验证模式: strict（严格）/ guest（访客模式）/ off（关闭）
+  verify_mode: strict
+  # 注册提示文本
+  enrollment_text: "灵枢所辖，万物听令；心有灵犀，无远弗届。"
+  # 注册样本数
+  enrollment_samples: 5
+  # 最大用户数
+  max_users: 10
+
+# ============================================================
+# GUI面板配置（增补卷）
+# ============================================================
+gui:
+  # 面板框架: gradio / streamlit / none（禁用）
+  framework: gradio
+  # 自动打开浏览器
+  auto_launch: true
+  # 服务端口
+  port: 7860
+  # 服务地址（0.0.0.0允许外部访问，127.0.0.1仅本地）
+  host: "127.0.0.1"
+  # 主题: default / dark / light
+  theme: dark
+  # 状态刷新间隔（秒）
+  status_refresh_interval: 2
+
+# 执行操作配置
 executor:
-  # 安全级别: strict / normal / permissive
-  # strict: 所有操作均需确认
-  # normal: 仅敏感操作需确认
-  # permissive: 仅极高危操作需确认
   safety_level: normal
-  # 敏感操作列表（安全级别 normal 时触发确认）
   sensitive_actions:
     - delete_file
     - delete_folder
@@ -70,38 +141,143 @@ executor:
     - execute_shell
     - payment
     - modify_system_settings
-  # 操作间隔（毫秒，防止过快点击）
   action_delay_ms: 500
-  # 坐标容错像素（分辨率适配）
   coordinate_tolerance: 10
 
-# 记忆与知识库
+# 记忆学习配置
 memory:
-  # 向量数据库类型: chromadb / sqlite_vec
   vector_db: chromadb
-  # 数据库路径
   db_path: "knowledge/vector_db"
-  # 最大记忆条目数
   max_entries: 10000
-  # 相似度阈值（0-1，越高越严格）
   similarity_threshold: 0.75
 
-# 系统监控（观星术）
+# 系统监控配置
 monitor:
-  # 监控间隔（秒）
   interval_seconds: 5
-  # CPU 告警阈值（%）
   cpu_threshold: 85
-  # 内存告警阈值（%）
   memory_threshold: 85
-  # 磁盘告警阈值（%）
   disk_threshold: 90
+  # 主动服务预警（增补卷 + 进化卷）
+  proactive_alerts: true
+  # 性能建议阈值（%）
+  performance_suggest_threshold: 80
+
+# ============================================================
+# 主动服务配置（Phase 3）
+# ============================================================
+proactive:
+  # 是否启用主动服务
+  enabled: true
+  # 检查间隔（秒）
+  check_interval: 60
+  # 预测性维护
+  predictive_maintenance: true
+  # 跨领域整合
+  cross_domain_integration: true
+  # 智能日程
+  smart_schedule: true
+  # 安静时段（不推送建议）
+  quiet_hours: [23, 7]  # 23:00 - 07:00
+
+# ============================================================
+# 自我进化配置（进化卷）
+# ============================================================
+evolution:
+  # 是否启用自我进化
+  enabled: true
+  # SEAgent 配置
+  seagent:
+    # 导师智能体（自我反思）
+    tutor_enabled: true
+    # 学生智能体（技能探索）
+    student_enabled: true
+    # 评审智能体（效果评估）
+    judge_enabled: true
+  # 反思间隔（小时）
+  reflection_interval: 3600  # 每小时反思一次
+  # 自动重试次数
+  auto_retry_count: 2
+  # 学生智能体进化阈值（相似度>0.8才保留）
+  reflection_trigger_threshold: 3
+
+# ============================================================
+# 多智能体协同配置（进化卷）
+# ============================================================
+multi_agent:
+  # 协调器启用
+  commander_enabled: true
+  # 专家智能体注册列表
+  experts:
+    visual_master:
+      name: "视觉大师"
+      description: "PPT设计、海报制作、图片生成、视频剪辑、配色方案、排版设计"
+      supported_apps: ["photoshop", "premiere", "after_effects", "gimp"]
+    data_steward:
+      name: "数据管家"
+      description: "Excel处理、数据分析、图表生成、SQL查询、数据清洗、报表生成"
+      supported_apps: ["excel", "powerbi", "tableau", "sqlite"]
+    stage_director:
+      name: "舞台导演"
+      description: "DMX灯光控制、音响管理、场景切换、特效编排、演出控制"
+      supported_protocols: ["dmx512", "mqtt", "modbus"]
+    hardware_controller:
+      name: "硬件控制器"
+      description: "通用设备控制、协议管理、状态监控、紧急停止"
+      supported_protocols: ["hid", "serial", "tcp"]
+  # 任务分解模式: auto / manual
+  task_decomposition: auto
+
+# ============================================================
+# 数字孪生配置（进化卷）
+# ============================================================
+digital_twin:
+  # 沙箱环境
+  sandbox_enabled: true
+  # 预演模式: strict（严格）/ advisory（建议）/ off（关闭）
+  rehearsal_mode: advisory
+  # 高风险操作阈值（需要预演）
+  high_risk_threshold: 10
+  # 预演超时（秒）
+  rehearsal_timeout: 30
+
+# ============================================================
+# 硬件控制配置（增补卷 + 进化卷）
+# ============================================================
+hardware:
+  # 默认场景: computer / stage / hotel / meeting
+  default_scene: computer
+  # 协议配置
+  protocols:
+    tcp:
+      enabled: true
+      timeout: 5
+    mqtt:
+      enabled: true
+      broker: "localhost"
+      port: 1883
+    modbus:
+      enabled: true
+      mode: tcp  # tcp / rtu
+    serial:
+      enabled: true
+      default_port: "COM3"  # Windows, /dev/ttyUSB0 on Linux
+      baudrate: 9600
+    dmx512:
+      enabled: false  # 需要USB-DMX适配器
+      device_path: null
+  # 紧急停止配置
+  emergency_stop:
+    enabled: true
+    # USB HID 紧急停止按钮设备VID/PID
+    device_vid: null
+    device_pid: null
 
 # 开发配置
 development:
-  # 调试模式（显示详细日志、不隐藏GUI窗口）
   debug_mode: false
-  # 跳过语音唤醒，直接接受键盘输入（方便调试）
   skip_wake_word: false
-  # 模拟执行模式（不真正点击，仅打印操作日志）
   dry_run: false
+  # 安静模式（不启动语音监听）
+  silent_mode: false
+  # 详细模式（显示更多日志）
+  verbose_mode: true
