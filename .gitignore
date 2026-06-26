@@ -1,0 +1,63 @@
+# 灵枢（LingShu）Agent — Git 忽略规则
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# 虚拟环境 / 内嵌Python
+venv/
+python/
+env/
+ENV/
+
+# 模型文件（体积过大，不提交 Git）
+models/*/
+!models/.gitkeep
+
+# 向量数据库（运行时生成）
+knowledge/*/
+!knowledge/.gitkeep
+
+# 日志
+logs/
+*.log
+
+# 系统文件
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+
+# IDE
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# 本地配置覆盖（含敏感信息）
+config/lingshu.local.yaml
+config/lingshu.private.yaml
+
+# 临时文件
+tmp/
+temp/
+*.tmp

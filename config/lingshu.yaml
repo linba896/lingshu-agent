@@ -1,0 +1,107 @@
+# ============================================================
+# 灵枢（LingShu）Agent — 主配置文件
+# 所有路径均支持相对路径（相对于灵枢根目录）
+# ============================================================
+
+# 基础配置
+app:
+  name: "灵枢"
+  name_en: "LingShu"
+  version: "0.1.0-alpha"
+  # 日志级别: DEBUG, INFO, WARNING, ERROR
+  log_level: INFO
+  # 日志保留天数
+  log_retention_days: 7
+
+# 模型配置
+models:
+  # 语音识别模型（ASR）
+  asr:
+    model_path: "models/asr/whisper-tiny"
+    model_size: "tiny"       # tiny/base/small/medium/large
+    language: "zh"           # 自动检测可设为 "auto"
+    device: "cpu"            # cpu / cuda / mps
+    compute_type: "int8"     # int8 / float16 / float32
+
+  # 意图理解模型（NLU）
+  nlu:
+    model_path: "models/nlu/qwen2.5-1.5b-lora"
+    base_model: "Qwen/Qwen2.5-1.5B-Instruct"
+    device: "cpu"
+    max_tokens: 512
+    temperature: 0.3
+
+  # 视觉语言模型（VLM）
+  vlm:
+    model_path: "models/vlm/qwen3-vl-8b"
+    base_model: "Qwen/Qwen3-VL-8B-Instruct"
+    device: "cpu"
+    compute_type: "fp8"      # fp8 / int8 / int4
+    # 截图频率（帧/秒）
+    screenshot_fps: 2
+    # 截图分辨率上限（减少显存/内存占用）
+    max_resolution: [1920, 1080]
+
+# 语音交互配置
+voice:
+  # 输入设备（默认系统默认麦克风）
+  input_device: null
+  # 唤醒词
+  wake_word: "灵枢"
+  # 语音活动检测（VAD）灵敏度
+  vad_sensitivity: 3
+  # 录音采样率
+  sample_rate: 16000
+  # 单次录音最大时长（秒）
+  max_recording_seconds: 30
+
+# 执行控制配置
+executor:
+  # 安全级别: strict / normal / permissive
+  # strict: 所有操作均需确认
+  # normal: 仅敏感操作需确认
+  # permissive: 仅极高危操作需确认
+  safety_level: normal
+  # 敏感操作列表（安全级别 normal 时触发确认）
+  sensitive_actions:
+    - delete_file
+    - delete_folder
+    - format_disk
+    - execute_shell
+    - payment
+    - modify_system_settings
+  # 操作间隔（毫秒，防止过快点击）
+  action_delay_ms: 500
+  # 坐标容错像素（分辨率适配）
+  coordinate_tolerance: 10
+
+# 记忆与知识库
+memory:
+  # 向量数据库类型: chromadb / sqlite_vec
+  vector_db: chromadb
+  # 数据库路径
+  db_path: "knowledge/vector_db"
+  # 最大记忆条目数
+  max_entries: 10000
+  # 相似度阈值（0-1，越高越严格）
+  similarity_threshold: 0.75
+
+# 系统监控（观星术）
+monitor:
+  # 监控间隔（秒）
+  interval_seconds: 5
+  # CPU 告警阈值（%）
+  cpu_threshold: 85
+  # 内存告警阈值（%）
+  memory_threshold: 85
+  # 磁盘告警阈值（%）
+  disk_threshold: 90
+
+# 开发配置
+development:
+  # 调试模式（显示详细日志、不隐藏GUI窗口）
+  debug_mode: false
+  # 跳过语音唤醒，直接接受键盘输入（方便调试）
+  skip_wake_word: false
+  # 模拟执行模式（不真正点击，仅打印操作日志）
+  dry_run: false
