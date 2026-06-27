@@ -28,8 +28,17 @@ from typing import Optional, List, Tuple, Callable
 try:
     from PIL import Image, ImageTk, ImageDraw, ImageFilter
     HAS_PIL = True
+    # Compatibility for old Pillow versions
+    _RESIZE_FILTER = getattr(Image, 'LANCZOS', None)
+    if _RESIZE_FILTER is None:
+        _RESIZE_FILTER = getattr(Image, 'ANTIALIAS', None)
+    if _RESIZE_FILTER is None and hasattr(Image, 'Resampling'):
+        _RESIZE_FILTER = Image.Resampling.LANCZOS
+    if _RESIZE_FILTER is None:
+        _RESIZE_FILTER = 1  # fallback
 except ImportError:
     HAS_PIL = False
+    _RESIZE_FILTER = None
     print("[WARN] Pillow not installed. Icon display may be limited.")
 
 try:
@@ -352,7 +361,7 @@ class SplashScreen:
                 icon_path = root_dir / "icon.ico"
             if icon_path.exists():
                 img = Image.open(icon_path)
-                img = img.resize((size, size), Image.LANCZOS)
+                img = img.resize((size, size), _RESIZE_FILTER)
                 return img
         except Exception as e:
             print(f"[Splash] Icon load failed: {e}")
@@ -504,7 +513,7 @@ class LingShuLauncher:
                 icon_path = root_dir / "icon.ico"
             if icon_path.exists():
                 img = Image.open(icon_path)
-                img = img.resize((size, size), Image.LANCZOS)
+                img = img.resize((size, size), _RESIZE_FILTER)
                 return img
         except Exception:
             pass
@@ -1016,22 +1025,38 @@ Developed with passion for AI-powered computing."""
 # Main Entry
 # ============================================================
 def main():
-    root = tk.Tk()
-    root.withdraw()  # Hide main window initially
+    try:
+        root = tk.Tk()
+        root.withdraw()  # Hide main window initially
 
-    # Show splash screen
-    splash = SplashScreen(root, duration_ms=3000)
+        # Show splash screen
+        splash = SplashScreen(root, duration_ms=3000)
 
-    # Wait for splash to finish
-    def show_main():
-        if splash.finished or not splash.window.winfo_exists():
-            root.deiconify()
-            app = LingShuLauncher(root)
-        else:
-            root.after(100, show_main)
+        # Wait for splash to finish
+        def show_main():
+            if splash.finished or not splash.window.winfo_exists():
+                root.deiconify()
+                app = LingShuLauncher(root)
+            else:
+                root.after(100, show_main)
 
-    root.after(100, show_main)
-    root.mainloop()
+        root.after(100, show_main)
+        root.mainloop()
+    except Exception as e:
+        import traceback
+        error_msg = f"LingShu Agent crashed!\n\nError: {e}\n\n{traceback.format_exc()}"
+        print(error_msg)
+        # Show error dialog if tkinter is available
+        try:
+            import tkinter as _tk
+            _root = _tk.Tk()
+            _root.withdraw()
+            from tkinter import messagebox
+            messagebox.showerror("LingShu Agent Error", error_msg)
+            _root.destroy()
+        except Exception:
+            pass
+        input("Press Enter to exit...")
 
 
 if __name__ == "__main__":
