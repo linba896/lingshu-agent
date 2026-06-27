@@ -7,8 +7,18 @@
 负责：配置加载、日志初始化、全部模块编排、生命周期管理、主循环
 """
 
-import argparse
 import sys
+import io
+
+# Force UTF-8 encoding on Windows to avoid UnicodeEncodeError with emoji
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, OSError):
+        pass
+
+import argparse
 import os
 import json
 import threading
@@ -83,7 +93,7 @@ def check_environment(root: Path, config: dict) -> bool:
     print("=" * 60)
     all_pass = True
     for name, value, ok in checks:
-        status = "✅ 通过" if ok else "❌ 失败"
+        status = "[OK] 通过" if ok else "[FAIL] 失败"
         if not ok:
             all_pass = False
         print(f"  {name:20s} {value:30s} {status}")
@@ -92,19 +102,95 @@ def check_environment(root: Path, config: dict) -> bool:
 
 
 def print_banner(config: dict):
-    """打印启动横幅"""
+    """赛博朋克风格启动画面 — 神经链接建立，意识在线"""
     from rich.console import Console
     from rich.panel import Panel
+    from rich.text import Text
+    from rich.align import Align
+    from rich import box
+    from rich.rule import Rule
+    import time
+    import sys
+
     console = Console()
     name = config.get("app", {}).get("name", "灵枢")
     version = config.get("app", {}).get("version", "0.3.0")
-    console.print(Panel.fit(
-        f"[bold cyan]{name}[/bold cyan] [dim]v{version}[/dim]\n"
-        f"[italic]超级电脑元神 · 数字生命体运行时[/italic]\n"
-        f'[green]"灵枢在此，主上何令？"[/green]',
-        title="启动",
-        border_style="bright_blue",
-    ))
+    build = config.get("app", {}).get("build", "Cybernetic-2408")
+
+    # ═══════════════════════════════════════════════════════════
+    #  第一层：巨型 ASCII Logo（渐变青→蓝→紫）
+    # ═══════════════════════════════════════════════════════════
+    logo = Text()
+    logo.append(
+        "    ██╗     ██╗███╗   ██╗ ██████╗  ██████╗ ██╗  ██╗     ██╗   ██╗ █████╗  \n",
+        style="bold bright_cyan",
+    )
+    logo.append(
+        "    ██║     ██║████╗  ██║██╔════╝ ██╔═══██╗██║  ██║     ██║   ██║██╔══██╗ \n",
+        style="bold cyan",
+    )
+    logo.append(
+        "    ██║     ██║██╔██╗ ██║██║  ███╗██║   ██║███████║     ██║   ██║███████║ \n",
+        style="bold bright_blue",
+    )
+    logo.append(
+        "    ██║     ██║██║╚██╗██║██║   ██║██║   ██║██╔══██║     ╚██╗ ██╔╝██╔══██║ \n",
+        style="bold blue",
+    )
+    logo.append(
+        "    ███████╗██║██║ ╚████║╚██████╔╝╚██████╔╝██║  ██║      ╚████╔╝ ██║  ██║ \n",
+        style="bold magenta",
+    )
+    logo.append(
+        "    ╚══════╝╚═╝╚═╝  ╚═══╝ ╚═════╝  ╚═════╝ ╚═╝  ╚═╝       ╚═══╝  ╚═╝  ╚═╝ \n",
+        style="bold bright_magenta",
+    )
+
+    # ═══════════════════════════════════════════════════════════
+    #  第二层：元信息 & 标语
+    # ═══════════════════════════════════════════════════════════
+    meta = Text(justify="center")
+    meta.append(f"☯  {name}  ", style="bold bright_white")
+    meta.append("LINGSHU", style="bold bright_cyan")
+    meta.append(f"  AGENT  {version}  ☯\n", style="bold bright_white")
+    meta.append(
+        f'"灵枢在此，所唤何声？"  ·  Neural Agent  ·  {build}\n',
+        style="dim italic bright_green",
+    )
+    meta.append(
+        f"System Boot  {time.strftime('%Y-%m-%d %H:%M:%S')}  ·  Python {sys.version.split()[0]}  ·  Platform {sys.platform}\n",
+        style="dim",
+    )
+
+    # ═══════════════════════════════════════════════════════════
+    #  第三层：装饰性状态条（模拟加载完成）
+    # ═══════════════════════════════════════════════════════════
+    bar_width = 56
+    filled = bar_width
+    empty = 0
+    bar = (
+        f"    [bright_cyan]{'█' * filled}[/bright_cyan]"
+        f"[dim]{'░' * empty}[/dim]"
+    )
+    status = Text.from_markup(f"{bar}  [bright_cyan]100%[/bright_cyan]  [green]READY[/green]")
+
+    # 组合
+    content = Text.assemble(logo, "\n", meta, "\n", status)
+
+    panel = Panel(
+        Align.center(content),
+        title="[bold bright_cyan blink]◈  NEURAL LINK ESTABLISHED  ◈[/bold bright_cyan blink]",
+        subtitle="[dim]Consciousness Online  ::  System Awake  ::  意识在线[/dim]",
+        border_style="bright_cyan",
+        box=box.ROUNDED,
+        padding=(1, 3),
+    )
+
+    console.print("\n")
+    console.print(panel)
+    console.print("\n")
+    console.print(Rule("[dim]INITIALIZING SUBSYSTEMS[/dim]", style="dim cyan", align="center"))
+
 
 
 def main():
@@ -425,6 +511,7 @@ def main():
                 "  text         — 停止语音监听\n"
                 "  stt <秒>     — 录制N秒并转文字\n"
                 "  nlu <文本>   — 测试意图理解\n"
+                "  proactive    — 查看主动建议\n"
                 "  screenshot   — 截取屏幕并保存到 logs/\n"
                 "  look [提问]  — 截图并用 VLM 分析屏幕\n"
                 "  vision info  — 查看视觉模块状态\n"
