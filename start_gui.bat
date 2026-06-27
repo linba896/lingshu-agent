@@ -59,12 +59,13 @@ pause
 exit /b 1
 
 :found
-echo [灵枢] 使用 Python: %PY%
-echo [灵枢] 启动 VS Code 风格 IDE...
+echo [LingShu] Python: %PY%
+echo [LingShu] Launching VS Code style IDE...
 
-"%PY%" "gui_launcher.py"
+cd /d "%ROOT%"
+"%PY%" "%ROOT%gui_launcher.py"
 if %errorlevel% neq 0 (
     echo.
-    echo 启动失败，请检查错误信息。
+    echo Launch failed, check error message.
     pause
 )

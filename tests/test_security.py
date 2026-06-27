@@ -41,7 +41,7 @@ class TestCryptoManager:
 
     def test_encrypt_decrypt(self):
         crypto = CryptoManager()
-        plaintext = b"Hello, 灵枢!"
+        plaintext = b"Hello, LingShu!"
         encrypted = crypto.encrypt(plaintext)
         assert isinstance(encrypted, EncryptedData)
         assert encrypted.ciphertext != plaintext
