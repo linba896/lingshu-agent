@@ -201,6 +201,7 @@ def main():
     parser.add_argument("--debug", action="store_true", help="调试模式")
     parser.add_argument("--no-gui", action="store_true", help="禁用图形界面")
     parser.add_argument("--skip-auth", action="store_true", help="跳过授权检查（仅开发）")
+    parser.add_argument("--fast-start", action="store_true", help="极速启动模式：跳过重型模块自检，延迟加载非核心模块")
     args = parser.parse_args()
 
     root = Path(args.root) if args.root else resolve_root()
@@ -230,265 +231,184 @@ def main():
 
     logger.info("环境自检通过，初始化核心模块...")
 
-    # ============================================================
-    # 模块 1: 系统监控（观星术）
-    # ============================================================
-    try:
-        from core.monitor import SystemMonitor
-        monitor = SystemMonitor(config.get("monitor", {}), root)
-        monitor.start()
-        logger.info("系统监控模块已启动")
-    except ImportError:
-        logger.warning("系统监控模块未就绪")
-        monitor = None
+    # 所有模块变量
+    monitor = auth = voice = speaker = hardware = vision = executor = None
+    proactive = gui = memory = twin = None
 
-    # ============================================================
-    # 模块 2: 授权控制（增补卷十二）
-    # ============================================================
-    auth = None
-    try:
-        from core.auth import AuthManager
-        auth = AuthManager(root, config.get("auth", {}))
-        logger.info("授权控制模块已加载")
-        if not args.skip_auth and auth.is_first_use():
-            print("\n" + "=" * 60)
-            print(auth.get_authorization_text())
-            print("=" * 60 + "\n")
-            print("⚠️  首次使用：请手动完成授权（输入 'auth' 同意授权）\n")
-    except ImportError as e:
-        logger.warning(f"授权控制模块加载失败: {e}")
+    # 延迟加载模块列表（name -> loader_func）
+    lazy_modules = {}
+    lazy_loaded = {}  # 标记已完成的延迟加载
 
-    # ============================================================
-    # 模块 3: 声纹识别（增补卷十三）
-    # ============================================================
-    speaker = None
-    try:
-        from core.speaker import SpeakerVerifier
-        speaker_config = config.get("speaker", {})
-        profile_dir = root / speaker_config.get("profile_dir", "config/speaker_profiles")
-        speaker = SpeakerVerifier(
-            profile_dir=profile_dir,
-            threshold=speaker_config.get("similarity_threshold", 0.85),
-            verify_mode=speaker_config.get("verify_mode", "strict"),
-            max_users=speaker_config.get("max_users", 10),
-        )
-        logger.info("声纹识别模块已加载")
-    except ImportError as e:
-        logger.warning(f"声纹识别模块加载失败: {e}")
-
-    # ============================================================
-    # 模块 4: 语音交互（Phase 2）
-    # ============================================================
-    voice = None
-    try:
-        from core.asr import VoiceModule
-        voice = VoiceModule(
-            config.get("voice", {}),
-            config.get("models", {}).get("asr", {}),
-            config.get("models", {}).get("nlu", {}),
-            root,
-        )
-        if voice.is_ready():
-            logger.info("语音模块已加载（VAD + ASR + NLU）")
-        elif voice.is_partial_ready():
-            logger.info("语音模块部分就绪（ASR 可用）")
-        else:
-            logger.warning("语音模块未就绪")
-    except ImportError as e:
-        logger.warning(f"语音模块未就绪: {e}")
-        voice = None
-
-    # ============================================================
-    # 模块 5: 主动智能（进化卷一）
-    # ============================================================
-    proactive = None
-    try:
-        from core.proactive import ProactiveEngine
-        proactive = ProactiveEngine(config.get("proactive", {}), root)
-        if proactive.is_enabled():
-            proactive.start()
-            logger.info("主动智能引擎已启动")
-    except ImportError as e:
-        logger.warning(f"主动智能模块未就绪: {e}")
-
-    # ============================================================
-    # 模块 6: 硬件控制（增补卷十四 + 进化卷六）
-    # ============================================================
-    hardware = None
-    try:
-        from core.hardware import HardwareController
-        hardware = HardwareController(config.get("hardware", {}), root)
-        logger.info(f"硬件控制模块已加载，当前场景: {hardware.get_scene()}")
-    except ImportError as e:
-        logger.warning(f"硬件控制模块未就绪: {e}")
-
-    # ============================================================
-    # ============================================================
-    # 模块 7: 视觉模块（Phase 4 — 视觉理解）
-    # ============================================================
-    try:
-        from core.vision import VisionModule, VisionCapability
-        vision = VisionModule(
-            config.get("models", {}).get("vlm", {}),
-            root=root,
-        )
-        cap = vision.get_capability()
-        if cap.value >= VisionCapability.VLM.value:
-            logger.info("视觉模块已加载（VLM 视觉理解）")
-        elif cap.value >= VisionCapability.SCREENSHOT.value:
-            logger.info("视觉模块已加载（截图 + 降级分析）")
-        else:
-            logger.warning("视觉模块后端不可用")
-    except ImportError as e:
-        logger.warning(f"视觉模块加载失败: {e}")
-        vision = None
-
-    # ============================================================
-    # 模块 8: 执行模块（Phase 5 执行引擎）
-    # ============================================================
-    try:
-        from core.executor import ExecutorModule
-        executor = ExecutorModule(
-            config.get("executor", {}),
-            root=root,
-            auth_manager=auth,
-            vision_module=vision,
-        )
-        logger.info("执行模块已加载（键鼠模拟 + 安全确认 + 回滚）")
-    except ImportError as e:
-        logger.warning(f"执行模块未就绪: {e}")
-        executor = None
-
-    # ============================================================
-    # 模块 8.5: 数字孪生（进化卷 — 沙箱预演引擎）
-    # ============================================================
-    twin = None
-    try:
-        from core.digital_twin import DigitalTwin, RehearsalMode
-        twin_config = config.get("digital_twin", {})
-        twin = DigitalTwin(twin_config, root=root, vision_module=vision)
-        if twin.is_enabled():
-            logger.info(f"数字孪生沙箱已启动（模式: {twin.mode.value}）")
-        else:
-            logger.info("数字孪生沙箱已加载（当前关闭）")
-    except ImportError as e:
-        logger.warning(f"数字孪生模块未就绪: {e}")
-
-    # ============================================================
-    # 模块 9: 记忆模块（Phase 6 记忆引擎）
-    # ============================================================
-    try:
-        from core.memory import MemoryModule
-        memory = MemoryModule(
-            config.get("memory", {}),
-            root=root,
-            executor=executor,
-        )
-        logger.info(f"记忆模块已加载（录制回放 + 向量库 + 知识积累）")
-    except ImportError as e:
-        logger.warning(f"记忆模块未就绪: {e}")
-        memory = None
-
-    # ============================================================
-    # 模块 10: 图形界面（增补卷十一）
-    # ============================================================
-    gui = None
-    if not args.no_gui:
+    def load_core_modules():
+        """加载核心模块（必须启动）"""
+        nonlocal monitor, auth, voice, vision, executor
+        # 模块 1: 系统监控
         try:
-            from core.gui import LingShuGUI
-            gui = LingShuGUI(
-                config.get("gui", {}),
-                root,
-                on_command=lambda cmd: f"收到指令: {cmd}",
-                on_auth_grant=lambda: auth.grant_authorization() if auth else False,
-                on_auth_revoke=lambda: auth.revoke_authorization() if auth else False,
-            )
-            if gui.is_available():
-                gui.start(blocking=False)
-                logger.info("灵枢台图形界面已启动")
+            from core.monitor import SystemMonitor
+            monitor = SystemMonitor(config.get("monitor", {}), root)
+            monitor.start()
+            logger.info("系统监控模块已启动")
+        except ImportError:
+            logger.warning("系统监控模块未就绪")
+        # 模块 2: 授权控制
+        try:
+            from core.auth import AuthManager
+            auth = AuthManager(root, config.get("auth", {}))
+            logger.info("授权控制模块已加载")
+            if not args.skip_auth and auth.is_first_use():
+                print("\n" + "=" * 60)
+                print(auth.get_authorization_text())
+                print("=" * 60 + "\n")
+                print("⚠️  首次使用：请手动完成授权（输入 'auth' 同意授权）\n")
         except ImportError as e:
-            logger.warning(f"图形界面模块未就绪: {e}")
+            logger.warning(f"授权控制模块加载失败: {e}")
+        # 模块 4: 语音交互
+        try:
+            from core.asr import VoiceModule
+            voice = VoiceModule(
+                config.get("voice", {}),
+                config.get("models", {}).get("asr", {}),
+                config.get("models", {}).get("nlu", {}),
+                root,
+            )
+            if voice.is_ready():
+                logger.info("语音模块已加载（VAD + ASR + NLU）")
+            elif voice.is_partial_ready():
+                logger.info("语音模块部分就绪（ASR 可用）")
+            else:
+                logger.warning("语音模块未就绪")
+        except ImportError as e:
+            logger.warning(f"语音模块未就绪: {e}")
+            voice = None
+        # 模块 7: 视觉模块
+        try:
+            from core.vision import VisionModule, VisionCapability
+            vision = VisionModule(config.get("models", {}).get("vlm", {}), root=root)
+            cap = vision.get_capability()
+            if cap.value >= VisionCapability.VLM.value:
+                logger.info("视觉模块已加载（VLM 视觉理解）")
+            elif cap.value >= VisionCapability.SCREENSHOT.value:
+                logger.info("视觉模块已加载（截图 + 降级分析）")
+        except ImportError as e:
+            logger.warning(f"视觉模块加载失败: {e}")
+            vision = None
+        # 模块 8: 执行模块
+        try:
+            from core.executor import ExecutorModule
+            executor = ExecutorModule(config.get("executor", {}), root=root, auth_manager=auth, vision_module=vision)
+            logger.info("执行模块已加载（键鼠模拟 + 安全确认 + 回滚）")
+        except ImportError as e:
+            logger.warning(f"执行模块未就绪: {e}")
+            executor = None
 
-    # ============================================================
-    # 主循环（语音 + 文本 + 授权 + 声纹 + 主动智能）
-    # ============================================================
-    logger.info("进入主循环...")
-    use_voice = voice is not None and voice.is_ready()
-    skip_wake = config.get("development", {}).get("skip_wake_word", False)
-    verbose = config.get("development", {}).get("verbose_mode", True)
+    def load_heavy_modules():
+        """加载重型模块（后台延迟）"""
+        nonlocal speaker, proactive, hardware, twin, memory, gui
+        # 模块 3: 声纹识别
+        if "speaker" not in lazy_loaded:
+            try:
+                from core.speaker import SpeakerVerifier
+                sc = config.get("speaker", {})
+                speaker = SpeakerVerifier(
+                    profile_dir=root / sc.get("profile_dir", "config/speaker_profiles"),
+                    threshold=sc.get("similarity_threshold", 0.85),
+                    verify_mode=sc.get("verify_mode", "strict"),
+                    max_users=sc.get("max_users", 10),
+                )
+                logger.info("声纹识别模块已加载（延迟）")
+                lazy_loaded["speaker"] = True
+            except ImportError as e:
+                logger.debug(f"声纹模块延迟加载失败: {e}")
+        # 模块 5: 主动智能
+        if "proactive" not in lazy_loaded:
+            try:
+                from core.proactive import ProactiveEngine
+                proactive = ProactiveEngine(config.get("proactive", {}), root)
+                if proactive.is_enabled():
+                    proactive.start()
+                    logger.info("主动智能引擎已启动（延迟）")
+                lazy_loaded["proactive"] = True
+            except ImportError as e:
+                logger.debug(f"主动智能模块延迟加载失败: {e}")
+        # 模块 6: 硬件控制
+        if "hardware" not in lazy_loaded:
+            try:
+                from core.hardware import HardwareController
+                hardware = HardwareController(config.get("hardware", {}), root)
+                logger.info(f"硬件控制模块已加载（延迟），场景: {hardware.get_scene()}")
+                lazy_loaded["hardware"] = True
+            except ImportError as e:
+                logger.debug(f"硬件模块延迟加载失败: {e}")
+        # 模块 8.5: 数字孪生
+        if "twin" not in lazy_loaded:
+            try:
+                from core.digital_twin import DigitalTwin, RehearsalMode
+                twin = DigitalTwin(config.get("digital_twin", {}), root=root, vision_module=vision)
+                if twin.is_enabled():
+                    logger.info(f"数字孪生沙箱已启动（延迟），模式: {twin.mode.value}")
+                else:
+                    logger.info("数字孪生沙箱已加载（延迟，当前关闭）")
+                lazy_loaded["twin"] = True
+            except ImportError as e:
+                logger.debug(f"数字孪生延迟加载失败: {e}")
+        # 模块 9: 记忆
+        if "memory" not in lazy_loaded:
+            try:
+                from core.memory import MemoryModule
+                memory = MemoryModule(config.get("memory", {}), root=root, executor=executor)
+                logger.info("记忆模块已加载（延迟）")
+                lazy_loaded["memory"] = True
+            except ImportError as e:
+                logger.debug(f"记忆模块延迟加载失败: {e}")
+        # 模块 10: GUI
+        if "gui" not in lazy_loaded and not args.no_gui:
+            try:
+                from core.gui import LingShuGUI
+                gui = LingShuGUI(
+                    config.get("gui", {}), root,
+                    on_command=lambda cmd: f"收到指令: {cmd}",
+                    on_auth_grant=lambda: auth.grant_authorization() if auth else False,
+                    on_auth_revoke=lambda: auth.revoke_authorization() if auth else False,
+                )
+                if gui.is_available():
+                    gui.start(blocking=False)
+                    logger.info("灵枢台图形界面已启动（延迟）")
+                lazy_loaded["gui"] = True
+            except ImportError as e:
+                logger.debug(f"GUI 延迟加载失败: {e}")
 
-    # 主动智能建议回调
-    def on_proactive_suggestion(suggestion):
-        if gui:
-            gui.add_log(f"💡 主动建议: {suggestion.title} - {suggestion.description}")
-        if verbose:
-            print(f"\n💡 [主动建议] {suggestion.title} ({suggestion.confidence:.0%})")
-            print(f"   {suggestion.description}")
-            if suggestion.suggested_action:
-                print(f"   → 建议操作: {suggestion.suggested_action}")
-
-    if proactive:
-        proactive._on_suggestion = on_proactive_suggestion
-
-    # 语音意图处理
-    def on_intent_detected(result: dict):
-        intent_data = result.get("intent", {})
-        intent_type = intent_data.get("intent", "unknown")
-        raw_text = intent_data.get("raw_text", "")
-        print(f'\n[🎙️ 语音指令] "{raw_text}" → intent={intent_type}')
-
-        # 权限检查
-        if auth and not auth.is_authorized():
-            print("  → ❌ 灵枢未获授权，拒绝执行")
-            return
-
-        # 声纹验证（如果已注册）
-        if speaker and speaker.has_enrolled_users():
-            # 声纹验证在语音录制阶段已完成（理想）
-            # 实际应在 record_and_understand 中集成
-            pass
-
-        # 权限检查
-        if auth:
-            allowed, level, msg = auth.check_permission(intent_type, is_speaker_verified=True)
-            if not allowed:
-                print(f"  → ❌ 权限拒绝: {msg}")
-                return
-            print(f"  → ℹ️ 权限: {msg}")
-
-        # 审计日志
-        if auth:
-            auth.log_operation(intent_type, raw_text, "pending")
-
-        # 场景模式指令
-        if hardware and hardware.is_command_allowed(intent_type):
-            result = hardware.execute_scene_command(intent_type, intent_data.get("params", {}))
-            if result:
-                print(f"  → ✅ 硬件控制已执行")
-                return
-
-        # 日常操作
-        if intent_type == "open" and voice:
-            target = intent_data.get("target", "")
-            if target:
-                print(f"  → 执行: 打开 {target}")
-        elif intent_type == "unknown":
-            print("  → 未识别意图，请重试")
-
-    # 启动后台语音监听
-    if use_voice and not skip_wake:
-        voice.start_continuous_listening(on_intent_detected)
-        print("\n🎙️  语音模式已激活。说出唤醒词 \"灵枢\" 开始指令。\n")
+    # 极速启动模式：先加载核心，后台启动重型
+    if args.fast_start:
+        import time as _time
+        t0 = _time.time()
+        load_core_modules()
+        logger.info(f"核心模块加载完成，耗时: {_time.time() - t0:.2f}秒")
+        # 后台启动重型模块
+        def bg_loader():
+            load_heavy_modules()
+        bg_thread = threading.Thread(target=bg_loader, daemon=True, name="HeavyLoader")
+        bg_thread.start()
+        logger.info("重型模块正在后台加载...")
     else:
-        print("\n⌨️  当前为文本模式。输入 'help' 查看命令，'quit' 退出。\n")
+        load_core_modules()
+        load_heavy_modules()
+        logger.info("所有模块加载完成")
 
-    # 主循环
+    # 主循环 — 带延迟加载状态检测
+    loop_count = 0
     while True:
         try:
             user_input = input("灵枢 > ").strip()
         except (EOFError, KeyboardInterrupt):
             print("\n")
             break
+
+        # 检查后台延迟加载进度
+        if args.fast_start and loop_count % 5 == 0:
+            loaded = list(lazy_loaded.keys())
+            if loaded and len(loaded) < 6:
+                logger.debug(f"后台加载进度: {len(loaded)}/6 模块已完成")
+        loop_count += 1
 
         if not user_input:
             continue
