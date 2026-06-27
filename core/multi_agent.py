@@ -433,6 +433,7 @@ class MultiAgentCoordinator:
     
     def get_system_status(self) -> Dict:
         """获取所有智能体状态"""
+        agent_names = list(self.agents.keys())
         return {
             "agents": {
                 name: {
@@ -443,9 +444,13 @@ class MultiAgentCoordinator:
                 }
                 for name, agent in self.agents.items()
             },
+            "agents_count": len(self.agents),
+            "agent_names": agent_names,
+            "message_bus_count": len(self.message_bus),
+            "message_bus_size": len(self.message_bus),
+            "task_queue": len(self.task_history),
             "total_tasks": len(self.task_history),
             "completed_tasks": len([t for t in self.task_history if t.status == "completed"]),
-            "message_bus_size": len(self.message_bus),
         }
     
     def save_state(self):

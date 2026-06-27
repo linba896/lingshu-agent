@@ -201,7 +201,7 @@ class AuthManager:
         返回: (是否允许, 权限等级, 提示信息)
         """
         if not self.is_authorized():
-            return False, PermissionLevel.LEVEL_3, "灵枢未获授权，请先完成授权流程"
+            return False, PermissionLevel.LEVEL_3, "未获得授权，请先完成授权流程"
 
         # 访客模式限制
         if self._guest_mode:
@@ -216,7 +216,7 @@ class AuthManager:
         level_3 = self._permission_config.get("level_3", [])
 
         if action in level_1:
-            return True, PermissionLevel.LEVEL_1, "日常操作，直接执行"
+            return True, PermissionLevel.LEVEL_1, "基础操作，允许直接执行"
         elif action in level_2:
             if is_speaker_verified:
                 return True, PermissionLevel.LEVEL_2, "敏感操作，声纹已验证，执行"

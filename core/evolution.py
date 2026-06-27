@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import List, Dict, Optional, Tuple, Any
 
 
-dataclass(frozen=True)
+@dataclass(frozen=True)
 class EvolvedSkill:
     """一个进化后的技能快照"""
     name: str
@@ -37,7 +37,7 @@ class EvolvedSkill:
         return hashlib.sha256(content.encode()).hexdigest()[:16]
 
 
-dataclass
+@dataclass
 class ReflectionLog:
     """反思日志：记录 AI 的'思考过程'"""
     timestamp: str
@@ -48,7 +48,7 @@ class ReflectionLog:
     confidence: float  # 0.0-1.0，改进的置信度
 
 
-dataclass
+@dataclass
 class EvolutionRecord:
     """进化记录：一个完整的进化事件"""
     id: str
@@ -174,8 +174,8 @@ class AgentEvolver:
     
     def compress(self, skill: EvolvedSkill) -> EvolvedSkill:
         """知识压缩：简化复杂技能，保留核心逻辑"""
-        # 模拟：压缩代码（实际中应使用 LLM 进行代码简化）
-        compressed_code = f"# Compressed version of {skill.name}\n" + "\n".join(
+        # 模拟：压缩代码（移除注释和空行）
+        compressed_code = "\n".join(
             line for line in skill.source_code.split("\n") if line.strip() and not line.strip().startswith("#")
         )
         
