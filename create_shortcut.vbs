@@ -1,29 +1,20 @@
-' Create LingShu Agent desktop shortcut
-' Right-click run as admin: WScript "create_shortcut.vbs"
-
-Dim wsh, fso, desktop, shortcut, rootDir
-Set wsh = CreateObject("WScript.Shell")
+Set WshShell = CreateObject("WScript.Shell")
 Set fso = CreateObject("Scripting.FileSystemObject")
 
-rootDir = fso.GetParentFolderName(WScript.ScriptFullName)
-desktop = wsh.SpecialFolders("Desktop")
-
-Set shortcut = wsh.CreateShortcut(desktop & "\LingShu Agent.lnk")
-
-' Launch via WScript to minimize window
-shortcut.TargetPath = "WScript.exe"
-shortcut.Arguments = Chr(34) & rootDir & "\start_gui.vbs" & Chr(34)
-shortcut.WorkingDirectory = rootDir
-shortcut.Description = "LingShu Agent - Autonomous AI Agent System"
-
-' Set icon if exists
-iconPath = rootDir & "\icon.ico"
-If fso.FileExists(iconPath) Then
-    shortcut.IconLocation = iconPath
+RootPath = fso.GetParentFolderName(WScript.ScriptFullName)
+If Right(RootPath, 1) <> "\" Then
+    RootPath = RootPath & "\"
 End If
 
-shortcut.Save
+DesktopPath = WshShell.SpecialFolders("Desktop")
+LinkPath = DesktopPath & "\LingShu Agent.lnk"
 
-MsgBox "Shortcut created on desktop!" & vbCrLf & vbCrLf & _
-       "Name: LingShu Agent" & vbCrLf & _
-       "Location: " & desktop, vbInformation, "Success
+Set oLink = WshShell.CreateShortcut(LinkPath)
+oLink.TargetPath = RootPath & "start_gui.bat"
+oLink.WorkingDirectory = RootPath
+oLink.IconLocation = RootPath & "icon.ico"
+oLink.Description = "LingShu Agent - AI Digital Avatar"
+oLink.WindowStyle = 1
+oLink.Save
+
+WScript.Echo "Shortcut created!"
