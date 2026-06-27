@@ -1,4 +1,4 @@
-# 灵枢 Agent 构建产物
+# 灵枢 Agent 环境
 __pycache__/
 *.pyc
 *.pyo
@@ -6,7 +6,7 @@ __pycache__/
 dist/
 build/
 
-# 日志与临时文件
+# 日志和临时文件
 logs/*.log
 logs/*.jpg
 logs/*.png
@@ -14,7 +14,7 @@ logs/*.png
 *.tmp
 .tmp-push/
 
-# 配置文件与用户隐私数据（不提交仓库）
+# 数据文件（用户隐私，不提交）
 config/.auth_encrypted
 config/auth/*.jsonl
 config/speaker_profiles/*.json
@@ -22,7 +22,7 @@ config/evolution/*.json
 knowledge/vector_db/
 knowledge/action_records/*.json
 
-# 模型文件（太大，通常通过 download_models.py 下载）
+# 模型文件（体积过大，通过 download_models.py 管理）
 models/
 
 # 虚拟环境
@@ -31,7 +31,7 @@ venv/
 .venv/
 env/
 
-# 打包 wheels（可选提交）
+# 离线 wheels（体积大）
 wheels/
 
 # IDE

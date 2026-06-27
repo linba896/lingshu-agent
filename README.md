@@ -71,6 +71,8 @@ lingshu-agent/
 │   ├── multi_agent.py        # 多智能体协同（视觉大师/数据管家/舞台导演/硬件控制器）
 │   ├── vision.py             # 视觉理解（截图 + VLM + 元素定位 + 视觉指代解析）
 │   ├── executor.py           # 执行控制（键鼠模拟 + 安全确认 + 操作回滚 + 跨分辨率）
+│   ├── digital_twin.py       # 数字孪生沙箱（预演引擎 + 风险预测 + 操作模拟）
+│   ├── software_learner.py   # 软件学习引擎（文件分解 + 操作录制 + 自主学习 + 权限管理）
 │   └── memory.py             # 记忆学习（录制回放 + ChromaDB 向量检索 + 强化学习反馈）
 ├── models/                   # 本地模型文件
 │   ├── asr/whisper-tiny/     # 语音识别（faster-whisper）
@@ -92,7 +94,10 @@ lingshu-agent/
     ├── test_executor.py      # 执行模块测试
     ├── test_vision.py        # 视觉模块测试
     ├── test_memory.py        # 记忆模块测试
-    └── test_hardware.py      # 硬件控制测试
+    ├── test_hardware.py      # 硬件控制测试
+    ├── test_evolution.py     # 进化模块测试
+    ├── test_digital_twin.py  # 数字孪生测试
+    └── test_multi_agent.py   # 多智能体测试
 ```
 
 ---
@@ -109,6 +114,7 @@ lingshu-agent/
 | **Phase 5** | 执行模块：键鼠模拟 + 安全确认 + 操作回滚 | `executor.py` (pyautogui + 3 级安全 + undo/redo) | ✅ 已完成 |
 | **Phase 6** | 记忆学习：录制回放 + 向量库 + 知识积累 | `memory.py` (ChromaDB + sentence-transformers + RL) | ✅ 已完成 |
 | **Phase 7** | 联调优化：量化压缩 + 速度优化 + 端口检测 | `quantize_models.py`, `optimize.py`, `port_check.py` | ✅ 已完成 |
+| **v2.0** | VS Code IDE + 软件学习引擎 + 极速启动 | `gui_launcher.py`, `software_learner.py`, `--fast-start` | ✅ 已完成 |
 
 ---
 
@@ -128,6 +134,9 @@ lingshu-agent/
 | 多智能体 | 专家面板 | 视觉大师/数据管家/舞台导演/硬件控制器 |
 | GUI 面板 | Web 界面 | Gradio 4.x (Dark 主题 + 实时日志 + 授权弹窗) |
 | 系统监控 | 资源监控 | psutil + 预测性维护 |
+| 数字孪生 | 沙箱预演 | 系统快照 + 风险预测 + 操作模拟 |
+| 软件学习 | 操作录制 | pyautogui + pynput（鼠标/键盘录制） |
+| IDE 界面 | 桌面 GUI | tkinter (VS Code Dark+ 风格) |
 
 ---
 
@@ -135,9 +144,10 @@ lingshu-agent/
 
 ```
 ┌─────────────────────────────────────────────────────┐
-│                   灵枢 Agent v0.3.0                  │
+│                   灵枢 Agent v2.0                    │
 ├─────────────────────────────────────────────────────┤
-│  入口层: launcher.py (10模块编排 + CLI + 生命周期)    │
+│  入口层: gui_launcher.py (VS Code IDE + 软件学习)    │
+│         launcher.py (10模块编排 + CLI + 生命周期)    │
 ├─────────────────────────────────────────────────────┤
 │  感知层: voice (ASR+VAD) → vision (VLM+OCR)        │
 │          ↓                    ↓                      │
@@ -146,9 +156,11 @@ lingshu-agent/
 │  决策层: proactive (主动) → multi_agent (多智能体)  │
 │          ↓                    ↓                      │
 │  进化层: evolution (SEAgent + AgentEvolver)        │
+│          twin (数字孪生沙箱预演)                      │
 ├─────────────────────────────────────────────────────┤
 │  执行层: executor (键鼠+安全+回滚) → hardware (硬件) │
 │          ↓                    ↓                        │
+│  学习层: software_learner (文件分解+操作录制+权限)   │
 │  记忆层: memory (录制+向量+检索) → gui (Gradio面板)│
 └─────────────────────────────────────────────────────┘
 ```
@@ -175,6 +187,7 @@ lingshu-agent/
 | `undo` / `redo` | 撤销 / 重做 |
 | `exec status` / `exec history` | 执行模块状态 / 操作历史 |
 | `memory <子命令>` | 记忆管理（search/store/list/record/replay/stats） |
+| `twin` | 数字孪生沙箱预演（rehearse/simulate/status） |
 | `proactive` | 查看主动服务建议 |
 | `modules` | 查看已加载模块状态 |
 | `config` | 查看当前配置 |
@@ -182,11 +195,36 @@ lingshu-agent/
 
 ---
 
+## 桌面 IDE 启动（推荐）
+
+### Windows
+双击 `start_gui.vbs` 或 `start_gui.bat` 启动 VS Code 风格 IDE。
+
+```powershell
+# 创建桌面快捷方式
+WScript create_shortcut.vbs
+```
+
+### 界面功能
+- **左侧图标栏**：资源管理器、搜索、软件学习、设置
+- **左侧文件树**：项目文件结构
+- **中间主区**：控制台（启动/停止/状态）、项目视图、学习视图
+- **底部终端**：实时日志输出、命令输入
+- **底部状态栏**：系统状态、编码信息
+
+### 软件学习引擎
+1. 点击"添加软件"，选择软件目录或 .exe 文件
+2. 灵枢自动分解文件结构、分析依赖关系
+3. 点击"开始学习"，手动操作软件，灵枢会观察记录
+4. 学习完成后，授予权限，灵枢即可自动操作该软件
+
+---
+
 ## 配置说明（config/lingshu.yaml）
 
 ```yaml
 app:
-  version: "0.3.0"
+  version: "2.0.0"
   log_level: INFO
 
 auth:
@@ -220,6 +258,16 @@ hardware:
     modbus: { enabled: true }
     serial: { enabled: true }
     dmx512: { enabled: false }
+
+digital_twin:
+  enabled: true
+  mode: advisory  # strict / advisory / off
+  high_risk_threshold: 70
+  sandbox_enabled: true
+
+software_learner:
+  enabled: true
+  max_learned_software: 50
 ```
 
 ---
@@ -264,6 +312,9 @@ pytest tests/test_vision.py -v
 pytest tests/test_memory.py -v
 pytest tests/test_speaker.py -v
 pytest tests/test_hardware.py -v
+pytest tests/test_digital_twin.py -v
+pytest tests/test_evolution.py -v
+pytest tests/test_multi_agent.py -v
 ```
 
 ---
@@ -280,17 +331,7 @@ pytest tests/test_hardware.py -v
 5. **审计日志**：所有操作记录到 `config/auth/audit_log.jsonl`，不可篡改
 6. **紧急停止**：Ctrl+C 或语音指令"停止"立即终止，FARLS 安全（鼠标移角落）
 7. **访客模式**：未授权时仅允许基础操作
-
----
-
-## 开发计划（未来）
-
-| 版本 | 目标 | 功能 |
-|------|------|------|
-| v0.4.0 | 数字孪生 | 沙箱环境、预演模式、操作模拟 |
-| v0.5.0 | 情感计算 | 情绪识别、语音语调分析、情感反馈 |
-| v0.6.0 | 自适应学习 | 自动操作序列学习、强化学习优化 |
-| v1.0.0 | 生产就绪 | 全平台测试、性能优化、安全审计 |
+8. **数字孪生**：高风险操作先沙箱预演，预测风险后再执行
 
 ---
 
@@ -309,4 +350,4 @@ pytest tests/test_hardware.py -v
 *项目代号：灵枢（LingShu）*  
 *架构文档：《灵枢·造物志》（白皮书 + 增补卷 + 进化卷）*  
 *启动时间：2026-06-26*  
-*当前版本：v0.3.0*
+*当前版本：v2.0*
