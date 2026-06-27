@@ -1,17 +1,14 @@
 @echo off
 chcp 65001 >nul
-cd /d "%~dp0"
-set ROOT=%~dp0
-if "%ROOT:~-1%"=="\" set ROOT=%ROOT:~0,-1%
 
+cd /d "%~dp0"
 echo [LingShu] Starting GUI Launcher...
 echo [LingShu] Initializing Neural Core...
 
-:: Find Python - try local venv first, then system Python
+:: Find Python
 set "PYTHON="
-if exist "%ROOT%\.venv\Scripts\python.exe" (
-    set "PYTHON=%ROOT%\.venv\Scripts\python.exe"
-    echo [LingShu] Found local venv Python
+if exist "%~dp0.venv\Scripts\python.exe" (
+    set "PYTHON=%~dp0.venv\Scripts\python.exe"
 ) else (
     for /f "delims=" %%i in ('where python 2^>nul') do set "PYTHON=%%i" & goto found
     for /f "delims=" %%i in ('where python3 2^>nul') do set "PYTHON=%%i" & goto found
@@ -24,11 +21,9 @@ if "%PYTHON%"=="" (
     exit /b 1
 )
 
-echo [LingShu] Python: %PYTHON%
-
 :: Launch GUI directly - tkinter is built-in, Pillow is pre-installed
-cd /d "%ROOT%"
-"%PYTHON%" "%ROOT%gui_launcher.py" %*
+cd /d "%~dp0"
+"%PYTHON%" "%~dp0gui_launcher.py" %*
 if errorlevel 1 (
     echo [ERROR] GUI failed to start! 
     echo.
