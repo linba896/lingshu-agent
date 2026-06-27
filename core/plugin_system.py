@@ -162,37 +162,113 @@ class PluginSandbox:
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
                 for alias in node.names:
-                    root = alias.name.split(".")[0]
-                    if root not in self.ALLOWED_MODULES:
-                        raise PluginSecurityError(
-                            f"插件 '{self.plugin_id}' 尝试导入受限模块: {alias.name}"
-                        )
+                    if alias.name not in self.ALLOWED_MODULES:
+                        raise PluginSecurityError(f"禁止导入模块: {alias.name}")
             elif isinstance(node, ast.ImportFrom):
-                if node.module:
-                    root = node.module.split(".")[0]
-                    if root not in self.ALLOWED_MODULES:
-                        raise PluginSecurityError(
-                            f"插件 '{self.plugin_id}' 尝试从受限模块导入: {node.module}"
-                        )
-            elif isinstance(node, ast.Call):
-                # 检查 eval/exec 调用
-                if isinstance(node.func, ast.Name) and node.func.id in self.BLOCKED_BUILTINS:
-                    raise PluginSecurityError(
-                        f"插件 '{self.plugin_id}' 尝试调用危险函数: {node.func.id}"
-                    )
+                if node.module and node.module not in self.ALLOWED_MODULES:
+                    raise PluginSecurityError(f"禁止导入模块: {node.module}")
         
         # 执行代码
-        globals_dict = self._restricted_globals.copy()
+        globals_dict = dict(self._restricted_globals)
         if additional_globals:
             globals_dict.update(additional_globals)
         
-        exec(compile(tree, f"<plugin_{self.plugin_id}>", "exec"), globals_dict)
-        return globals_dict
+        locals_dict = {}
+        exec(compile(tree, f"<plugin_{self.plugin_id}>", "exec"), globals_dict, locals_dict)
+        return locals_dict
 
 
 class PluginSecurityError(Exception):
     """插件安全错误"""
     pass
+
+
+class PluginEventBus:
+    """插件事件总线：实现插件间通信"""
+    
+    def __init__(self):
+        self._listeners: Dict[str, List[Callable]] = {}
+        self._lock = threading.RLock()
+    
+    def subscribe(self, event_type: str, callback: Callable) -> None:
+        """订阅事件"""
+        with self._lock:
+            if event_type not in self._listeners:
+                self._listeners[event_type] = []
+            self._listeners[event_type].append(callback)
+    
+    def unsubscribe(self, event_type: str, callback: Callable) -> None:
+        """取消订阅"""
+        with self._lock:
+            if event_type in self._listeners:
+                self._listeners[event_type] = [
+                    cb for cb in self._listeners[event_type] if cb != callback
+                ]
+    
+    def publish(self, event_type: str, data: Any, source: str = "") -> int:
+        """发布事件，返回处理数量"""
+        count = 0
+        with self._lock:
+            listeners = self._listeners.get(event_type, []).copy()
+        
+        for callback in listeners:
+            try:
+                if threading.current_thread().name == "MainThread":
+                    callback(data, source)
+                else:
+                    callback(data, source)
+                count += 1
+            except Exception as e:
+                print(f"[EventBus] 事件处理错误: {e}")
+        
+        return count
+
+
+class PluginAPIGateway:
+    """插件 API 网关：注册和调用插件 API"""
+    
+    def __init__(self):
+        self._apis: Dict[str, Dict[str, Callable]] = {}
+        self._lock = threading.RLock()
+    
+    def register_api(self, plugin_id: str, api_name: str, handler: Callable) -> None:
+        """注册 API"""
+        with self._lock:
+            if plugin_id not in self._apis:
+                self._apis[plugin_id] = {}
+            self._apis[plugin_id][api_name] = handler
+    
+    def unregister_api(self, plugin_id: str, api_name: str) -> None:
+        """注销 API"""
+        with self._lock:
+            if plugin_id in self._apis and api_name in self._apis[plugin_id]:
+                del self._apis[plugin_id][api_name]
+    
+    def unregister_plugin_apis(self, plugin_id: str) -> None:
+        """注销插件所有 API"""
+        with self._lock:
+            if plugin_id in self._apis:
+                del self._apis[plugin_id]
+    
+    def call_api(self, plugin_id: str, api_name: str, **kwargs) -> Any:
+        """调用 API"""
+        with self._lock:
+            handler = self._apis.get(plugin_id, {}).get(api_name)
+        
+        if not handler:
+            raise RuntimeError(f"API 未找到: {plugin_id}.{api_name}")
+        
+        try:
+            return handler(**kwargs)
+        except Exception as e:
+            raise RuntimeError(f"API 调用失败 '{plugin_id}.{api_name}': {e}")
+    
+    def list_apis(self, plugin_id: Optional[str] = None) -> Dict[str, List[PluginAPI]]:
+        """列出 API"""
+        with self._lock:
+            if plugin_id:
+                return {plugin_id: list(self._apis.get(plugin_id, {}).values())}
+            return {pid: list(apis.values()) for pid, apis in self._apis.items()}
 
 
 class PluginInterface:
@@ -263,101 +339,6 @@ class PluginContext:
         path = self.temp_dir / plugin_id
         path.mkdir(parents=True, exist_ok=True)
         return path
-
-
-class PluginEventBus:
-    """插件事件总线：实现插件间通信"""
-    
-    def __init__(self):
-        self._listeners: Dict[str, List[Callable]] = {}
-        self._lock = threading.RLock()
-    
-    def subscribe(self, event_type: str, callback: Callable) -> None:
-        """订阅事件"""
-        with self._lock:
-            if event_type not in self._listeners:
-                self._listeners[event_type] = []
-            self._listeners[event_type].append(callback)
-    
-    def unsubscribe(self, event_type: str, callback: Callable) -> None:
-        """取消订阅"""
-        with self._lock:
-            if event_type in self._listeners:
-                self._listeners[event_type] = [
-                    cb for cb in self._listeners[event_type] if cb != callback
-                ]
-    
-    def publish(self, event_type: str, data: Any, source: str = "") -> int:
-        """发布事件，返回处理数量"""
-        count = 0
-        with self._lock:
-            listeners = self._listeners.get(event_type, []).copy()
-        
-        for callback in listeners:
-            try:
-                if threading.current_thread().name == "MainThread":
-                    callback(data, source)
-                else:
-                    callback(data, source)
-                count += 1
-            except Exception as e:
-                # 事件处理失败不应影响其他监听器
-                print(f"[PluginEventBus] 事件处理错误: {e}")
-        
-        return count
-    
-    def publish_async(self, event_type: str, data: Any, source: str = "") -> None:
-        """异步发布事件"""
-        threading.Thread(
-            target=self.publish,
-            args=(event_type, data, source),
-            daemon=True,
-        ).start()
-
-
-class PluginAPIGateway:
-    """插件 API 网关：管理插件间 API 调用"""
-    
-    def __init__(self):
-        self._apis: Dict[str, Dict[str, PluginAPI]] = {}
-        self._handlers: Dict[str, Dict[str, Callable]] = {}
-        self._lock = threading.Lock()
-    
-    def register_api(self, plugin_id: str, api: PluginAPI, handler: Callable) -> bool:
-        """注册 API"""
-        with self._lock:
-            if plugin_id not in self._apis:
-                self._apis[plugin_id] = {}
-                self._handlers[plugin_id] = {}
-            self._apis[plugin_id][api.name] = api
-            self._handlers[plugin_id][api.name] = handler
-        return True
-    
-    def unregister_plugin_apis(self, plugin_id: str) -> None:
-        """注销插件的所有 API"""
-        with self._lock:
-            self._apis.pop(plugin_id, None)
-            self._handlers.pop(plugin_id, None)
-    
-    def call_api(self, plugin_id: str, api_name: str, **kwargs) -> Any:
-        """调用插件 API"""
-        with self._lock:
-            handlers = self._handlers.get(plugin_id, {})
-            if api_name not in handlers:
-                raise KeyError(f"API '{api_name}' 不存在于插件 '{plugin_id}'")
-            handler = handlers[api_name]
-        
-        try:
-            return handler(**kwargs)
-        except Exception as e:
-            raise RuntimeError(f"API 调用失败 '{plugin_id}.{api_name}': {e}")
-    
-    def list_apis(self, plugin_id: Optional[str] = None) -> Dict[str, List[PluginAPI]]:
-        """列出 API"""
-        with self._lock:
-            if plugin_id:
-                return {plugin_id: list(self._apis.get(plugin_id, {}).values())}
-            return {pid: list(apis.values()) for pid, apis in self._apis.items()}
 
 
 class PluginManager:
@@ -653,289 +634,171 @@ class PluginManager:
             results[plugin_id] = self.enable(plugin_id)
         return results
     
-    def install_from_zip(self, zip_path: Union[str, Path]) -> Optional[PluginManifest]:
-        """从 ZIP 安装插件"""
-        zip_path = Path(zip_path)
-        if not zip_path.exists():
-            return None
-        
-        temp_extract = self.cache_dir / f"extract_{int(time.time())}"
-        temp_extract.mkdir(exist_ok=True)
-        
-        try:
-            with zipfile.ZipFile(zip_path, "r") as zf:
-                zf.extractall(temp_extract)
-            
-            # 找到 manifest.json
-            manifest_file = None
-            for f in temp_extract.rglob("manifest.json"):
-                manifest_file = f
-                break
-            
-            if not manifest_file:
-                return None
-            
-            manifest = self._read_manifest(manifest_file.parent)
-            if not manifest:
-                return None
-            
-            # 安装到 enabled 目录
-            target = self.enabled_dir / manifest.id
-            if target.exists():
-                shutil.rmtree(target)
-            
-            # 移动文件
-            src = manifest_file.parent
-            shutil.copytree(src, target)
-            
-            self._manifests[manifest.id] = manifest
-            self._states[manifest.id] = PluginState.DISCOVERED
-            
-            return manifest
-            
-        finally:
-            shutil.rmtree(temp_extract, ignore_errors=True)
-    
-    def uninstall(self, plugin_id: str) -> bool:
-        """卸载插件（删除文件）"""
-        if plugin_id in self._plugins:
-            self.unload(plugin_id)
-        
-        plugin_dir = self._find_plugin_dir(plugin_id)
-        if plugin_dir:
-            shutil.rmtree(plugin_dir)
-        
-        self._manifests.pop(plugin_id, None)
-        self._states.pop(plugin_id, None)
-        
-        return True
-    
     def get_plugin(self, plugin_id: str) -> Optional[PluginInterface]:
         """获取插件实例"""
         return self._plugins.get(plugin_id)
     
-    def get_state(self, plugin_id: str) -> Optional[PluginState]:
+    def get_state(self, plugin_id: str) -> PluginState:
         """获取插件状态"""
-        return self._states.get(plugin_id)
+        return self._states.get(plugin_id, PluginState.DISCOVERED)
     
-    def list_plugins(self, state: Optional[PluginState] = None) -> List[Dict[str, Any]]:
-        """列出插件"""
+    def list_plugins(self) -> List[Dict[str, Any]]:
+        """列出所有插件"""
         results = []
-        for pid, manifest in self._manifests.items():
-            s = self._states.get(pid)
-            if state and s != state:
-                continue
-            results.append({
-                "id": pid,
-                "name": manifest.name,
-                "version": manifest.version,
-                "author": manifest.author,
-                "state": s.name if s else "UNKNOWN",
-                "priority": manifest.priority.name,
-                "tags": manifest.tags,
-            })
+        for plugin_id in self._load_order:
+            instance = self._plugins.get(plugin_id)
+            if instance:
+                results.append({
+                    "id": plugin_id,
+                    "name": instance.manifest.name,
+                    "version": instance.manifest.version,
+                    "state": self._states.get(plugin_id, PluginState.DISCOVERED).name,
+                    "enabled": instance._enabled,
+                })
         return results
     
-    def get_plugin_apis(self, plugin_id: str) -> List[PluginAPI]:
-        """获取插件 API 列表"""
-        apis = self.context.api_gateway.list_apis(plugin_id)
-        return apis.get(plugin_id, [])
+    def install_from_zip(self, zip_path: Path, plugin_id: Optional[str] = None) -> bool:
+        """从 ZIP 安装插件"""
+        try:
+            with zipfile.ZipFile(zip_path, "r") as zf:
+                # 读取清单
+                names = zf.namelist()
+                manifest_name = "manifest.json"
+                if manifest_name not in names:
+                    # 可能嵌套一层
+                    for name in names:
+                        if name.endswith("/manifest.json"):
+                            manifest_name = name
+                            break
+                
+                if manifest_name not in names:
+                    print(f"[PluginManager] ZIP 中没有 manifest.json")
+                    return False
+                
+                manifest_data = json.loads(zf.read(manifest_name))
+                manifest = PluginManifest.from_dict(manifest_data)
+                target_id = plugin_id or manifest.id
+                
+                # 解压到 enabled 目录
+                target_dir = self.enabled_dir / target_id
+                if target_dir.exists():
+                    shutil.rmtree(target_dir)
+                target_dir.mkdir(parents=True)
+                
+                zf.extractall(target_dir)
+                
+                # 处理嵌套目录
+                entries = list(target_dir.iterdir())
+                if len(entries) == 1 and entries[0].is_dir():
+                    nested = entries[0]
+                    for item in nested.iterdir():
+                        shutil.move(str(item), str(target_dir / item.name))
+                    shutil.rmtree(nested)
+                
+                print(f"[PluginManager] 插件安装成功: {target_id}")
+                return True
+                
+        except Exception as e:
+            print(f"[PluginManager] 安装失败: {e}")
+            return False
     
-    def call_plugin_api(self, plugin_id: str, api_name: str, **kwargs) -> Any:
-        """调用插件 API"""
-        return self.context.api_gateway.call_api(plugin_id, api_name, **kwargs)
+    def uninstall(self, plugin_id: str) -> bool:
+        """卸载插件（删除文件）"""
+        # 先卸载
+        if plugin_id in self._plugins:
+            self.unload(plugin_id)
+        
+        # 删除目录
+        plugin_dir = self._find_plugin_dir(plugin_id)
+        if plugin_dir:
+            shutil.rmtree(plugin_dir)
+            self._manifests.pop(plugin_id, None)
+            self._states.pop(plugin_id, None)
+            print(f"[PluginManager] 插件已卸载: {plugin_id}")
+            return True
+        
+        return False
     
-    def subscribe_event(self, event_type: str, callback: Callable) -> None:
-        """订阅事件"""
-        self.context.event_bus.subscribe(event_type, callback)
-    
-    def publish_event(self, event_type: str, data: Any) -> int:
-        """发布事件"""
-        return self.context.event_bus.publish(event_type, data, source="agent")
-    
-    def start_watchdog(self, interval: float = 2.0) -> None:
-        """启动文件监视（热重载）"""
+    def enable_hot_reload(self, interval_seconds: float = 2.0) -> None:
+        """启用热重载"""
+        if self._watchdog_running:
+            return
+        
         self._watchdog_running = True
-        self._watchdog = threading.Thread(target=self._watchdog_loop, args=(interval,), daemon=True)
+        self._watchdog = threading.Thread(target=self._watchdog_loop, args=(interval_seconds,), daemon=True)
         self._watchdog.start()
+        print(f"[PluginManager] 热重载已启用 (间隔: {interval_seconds}s)")
     
-    def stop_watchdog(self) -> None:
-        """停止文件监视"""
+    def disable_hot_reload(self) -> None:
+        """禁用热重载"""
         self._watchdog_running = False
+        if self._watchdog:
+            self._watchdog.join(timeout=2.0)
+            self._watchdog = None
     
-    def _watchdog_loop(self, interval: float) -> None:
-        """监视循环"""
-        mtimes: Dict[str, float] = {}
+    def _watchdog_loop(self, interval_seconds: float) -> None:
+        """热重载监控循环"""
+        # 记录文件修改时间
+        last_modified: Dict[str, float] = {}
         
         while self._watchdog_running:
-            for plugin_id, manifest in self._manifests.items():
-                plugin_dir = self._find_plugin_dir(plugin_id)
-                if not plugin_dir:
-                    continue
+            try:
+                for plugin_id in list(self._load_order):
+                    plugin_dir = self._find_plugin_dir(plugin_id)
+                    if not plugin_dir:
+                        continue
+                    
+                    # 检查修改时间
+                    current_mtime = 0
+                    for file in plugin_dir.rglob("*"):
+                        if file.is_file():
+                            current_mtime = max(current_mtime, file.stat().st_mtime)
+                    
+                    if plugin_id in last_modified and current_mtime > last_modified[plugin_id]:
+                        print(f"[PluginManager] 检测到修改，重载: {plugin_id}")
+                        # 重新加载
+                        self.unload(plugin_id)
+                        self.load(plugin_id)
+                    
+                    last_modified[plugin_id] = current_mtime
                 
-                entry = plugin_dir / manifest.entry_point
-                if entry.exists():
-                    mtime = entry.stat().st_mtime
-                    key = str(entry)
-                    
-                    if key in mtimes and mtimes[key] != mtime:
-                        # 文件变更，触发重载
-                        if self._states.get(plugin_id) == PluginState.ENABLED:
-                            print(f"[PluginManager] 检测到变更，热重载: {plugin_id}")
-                            self.unload(plugin_id)
-                            self.load(plugin_id)
-                            self.enable(plugin_id)
-                    
-                    mtimes[key] = mtime
-            
-            time.sleep(interval)
+                time.sleep(interval_seconds)
+            except Exception as e:
+                print(f"[PluginManager] 热重载错误: {e}")
+                time.sleep(interval_seconds)
     
-    def get_stats(self) -> Dict[str, Any]:
-        """获取统计信息"""
-        return {
-            "total_discovered": len(self._manifests),
-            "loaded": len(self._plugins),
-            "enabled": sum(1 for s in self._states.values() if s == PluginState.ENABLED),
-            "disabled": sum(1 for s in self._states.values() if s == PluginState.DISABLED),
-            "error": sum(1 for s in self._states.values() if s == PluginState.ERROR),
-            "load_order": self._load_order.copy(),
-            "total_apis": sum(len(apis) for apis in self.context.api_gateway.list_apis().values()),
-        }
+    def get_config(self, plugin_id: str) -> Dict[str, Any]:
+        """获取插件配置"""
+        config_path = self.context.get_config_path(plugin_id)
+        if config_path.exists():
+            try:
+                with open(config_path, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except json.JSONDecodeError:
+                return {}
+        return {}
     
-    def shutdown(self) -> None:
-        """关闭插件系统"""
-        self.stop_watchdog()
+    def set_config(self, plugin_id: str, config: Dict[str, Any]) -> None:
+        """设置插件配置"""
+        config_path = self.context.get_config_path(plugin_id)
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(config_path, "w", encoding="utf-8") as f:
+            json.dump(config, f, indent=2, ensure_ascii=False)
         
-        # 按相反顺序卸载
-        for plugin_id in reversed(self._load_order):
-            if plugin_id in self._plugins:
-                self._plugins[plugin_id].on_disable()
-                self._plugins[plugin_id].on_unload()
-        
-        self._plugins.clear()
-        self._states.clear()
-        self._load_order.clear()
-
-
-# ==================== 便捷函数 ====================
-
-def create_plugin_template(plugin_id: str, name: str, output_dir: Path) -> Path:
-    """创建插件模板"""
-    plugin_dir = output_dir / plugin_id
-    plugin_dir.mkdir(parents=True, exist_ok=True)
-    
-    # manifest.json
-    manifest = {
-        "id": plugin_id,
-        "name": name,
-        "version": "1.0.0",
-        "author": "Your Name",
-        "description": f"{name} 插件",
-        "entry_point": "plugin.py",
-        "permissions": ["api.access"],
-        "priority": "NORMAL",
-        "hooks": ["agent.ready"],
-        "tags": ["example"],
-        "license": "MIT",
-    }
-    
-    with open(plugin_dir / "manifest.json", "w", encoding="utf-8") as f:
-        json.dump(manifest, f, indent=2, ensure_ascii=False)
-    
-    # plugin.py
-    plugin_code = f'''#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-{name} 插件
-"""
-
-from core.plugin_system import PluginInterface, PluginManifest, PluginContext, PluginAPI
-
-
-class {plugin_id.title().replace("_", "")}Plugin(PluginInterface):
-    """{name} 插件实现"""
-    
-    def on_load(self) -> bool:
-        print(f"[{{self.manifest.id}}] 插件加载")
-        return True
-    
-    def on_enable(self) -> bool:
-        print(f"[{{self.manifest.id}}] 插件启用")
-        return super().on_enable()
-    
-    def on_disable(self) -> bool:
-        print(f"[{{self.manifest.id}}] 插件禁用")
-        return super().on_disable()
-    
-    def get_api(self) -> list[PluginAPI]:
-        return [
-            PluginAPI(
-                name="hello",
-                description="示例 API",
-                parameters={"name": "str"}},
-                return_type="str",
-            ),
-        ]
-    
-    def call_api(self, api_name: str, **kwargs):
-        if api_name == "hello":
-            name = kwargs.get("name", "World")
-            return f"Hello, {{name}}!"
-        raise NotImplementedError(f"API {{api_name}} 未实现")
-'''
-    
-    with open(plugin_dir / "plugin.py", "w", encoding="utf-8") as f:
-        f.write(plugin_code)
-    
-    # README.md
-    readme = f"""# {name}
-
-{name} 插件 for 灵枢 Agent
-
-## 安装
-
-将目录复制到 `plugins/enabled/`
-
-## API
-
-- `hello(name: str) -> str`: 问候语
-"""
-    
-    with open(plugin_dir / "README.md", "w", encoding="utf-8") as f:
-        f.write(readme)
-    
-    return plugin_dir
+        # 通知插件
+        instance = self._plugins.get(plugin_id)
+        if instance:
+            for key, value in config.items():
+                instance.on_config_change(key, value)
 
 
 if __name__ == "__main__":
-    # 示例用法
-    import tempfile
+    # 测试代码
+    root = Path(__file__).parent.parent
+    pm = PluginManager(root)
     
-    with tempfile.TemporaryDirectory() as tmpdir:
-        root = Path(tmpdir)
-        
-        # 创建示例插件
-        template_dir = create_plugin_template("demo", "示例插件", root / "plugins" / "enabled")
-        print(f"模板创建: {template_dir}")
-        
-        # 初始化管理器
-        pm = PluginManager(root)
-        
-        # 发现并加载
-        manifests = pm.discover()
-        print(f"发现 {len(manifests)} 个插件")
-        
-        results = pm.load_all()
-        print(f"加载结果: {results}")
-        
-        # 启用
-        if "demo" in results and results["demo"]:
-            pm.enable("demo")
-            
-            # 调用 API
-            result = pm.call_plugin_api("demo", "hello", name="灵枢")
-            print(f"API 调用结果: {result}")
-        
-        print(f"统计: {pm.get_stats()}")
-        
-        pm.shutdown()
+    # 发现插件
+    manifests = pm.discover()
+    print(f"发现 {len(manifests)} 个插件")
+    for m in manifests:
+        print(f"  - {m.id}: {m.name} (v{m.version})")

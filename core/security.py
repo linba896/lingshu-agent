@@ -33,7 +33,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 
 # 可选加密库（优先 PyCryptodome，其次 cryptography）
 try:
@@ -161,32 +161,28 @@ class CryptoManager:
             )
             key = kdf.derive(password.encode())
         else:
-            # 降级：使用 PBKDF2-HMAC-SHA256
-            key = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, 100000, size)
+            raise EncryptionError("无加密后端可用")
         
         return key, salt
     
-    def encrypt(self, plaintext: Union[str, bytes], associated_data: Optional[bytes] = None) -> EncryptedData:
+    def encrypt(self, plaintext: bytes, associated_data: Optional[bytes] = None) -> EncryptedData:
         """加密数据"""
-        if isinstance(plaintext, str):
-            plaintext = plaintext.encode("utf-8")
+        if _CRYPTO_BACKEND is None:
+            raise EncryptionError("无加密后端可用。请安装 pycryptodome 或 cryptography")
         
-        with self._lock:
-            nonce = secrets.token_bytes(12)
-            
-            if _CRYPTO_BACKEND == "pycryptodome":
-                cipher = AES.new(self._key, AES.MODE_GCM, nonce=nonce)
-                if associated_data:
-                    cipher.update(associated_data)
-                ciphertext, tag = cipher.encrypt_and_digest(plaintext)
-            elif _CRYPTO_BACKEND == "cryptography":
-                aesgcm = AESGCM(self._key)
-                associated_data = associated_data or b""
-                ciphertext = aesgcm.encrypt(nonce, plaintext, associated_data)
-                tag = ciphertext[-16:]
-                ciphertext = ciphertext[:-16]
-            else:
-                raise EncryptionError("无加密后端可用")
+        nonce = secrets.token_bytes(12)
+        
+        if _CRYPTO_BACKEND == "pycryptodome":
+            cipher = AES.new(self._key, AES.MODE_GCM, nonce=nonce)
+            if associated_data:
+                cipher.update(associated_data)
+            ciphertext, tag = cipher.encrypt_and_digest(plaintext)
+        elif _CRYPTO_BACKEND == "cryptography":
+            aesgcm = AESGCM(self._key)
+            associated_data = associated_data or b""
+            ciphertext_with_tag = aesgcm.encrypt(nonce, plaintext, associated_data)
+            ciphertext = ciphertext_with_tag[:-16]
+            tag = ciphertext_with_tag[-16:]
         
         return EncryptedData(ciphertext, nonce, tag, "AES-256-GCM")
     
@@ -210,7 +206,7 @@ class CryptoManager:
     
     def encrypt_string(self, plaintext: str, associated_data: Optional[bytes] = None) -> str:
         """加密字符串，返回 Base64"""
-        encrypted = self.encrypt(plaintext, associated_data)
+        encrypted = self.encrypt(plaintext.encode("utf-8"), associated_data)
         return base64.b64encode(encrypted.to_bytes()).decode()
     
     def decrypt_string(self, ciphertext_b64: str, associated_data: Optional[bytes] = None) -> str:
@@ -400,373 +396,231 @@ class CredentialVault:
     
     def list_keys(self) -> List[str]:
         """列出所有凭据键"""
-        return list(self._credentials.keys())
+        with self._lock:
+            return list(self._credentials.keys())
     
-    def rotate(self, key: str) -> Optional[str]:
-        """轮换凭据（生成新值）"""
-        new_value = secrets.token_urlsafe(32)
-        self.store(key, new_value, {"rotated_at": time.time()})
-        return new_value
-    
-    def change_password(self, new_password: str) -> bool:
-        """更改主密码"""
-        try:
-            self._master_password = new_password
-            self._save()
-            return True
-        except Exception as e:
-            print(f"[CredentialVault] 密码更改失败: {e}")
-            return False
-    
-    def get_stats(self) -> Dict[str, Any]:
-        """获取统计"""
-        return {
-            "total_credentials": len(self._credentials),
-            "vault_file_size": self.vault_file.stat().st_size if self.vault_file.exists() else 0,
-            "key_hash": self._crypto.get_key_hash(),
-        }
+    def get_metadata(self, key: str) -> Optional[Dict[str, Any]]:
+        """获取凭据元数据"""
+        with self._lock:
+            cred = self._credentials.get(key)
+            if cred:
+                return cred.get("metadata")
+            return None
 
 
 class InputSanitizer:
     """输入消毒器：防止注入攻击"""
     
-    # SQL 注入关键词
-    SQL_KEYWORDS = [
-        "SELECT", "INSERT", "UPDATE", "DELETE", "DROP", "CREATE",
-        "ALTER", "EXEC", "UNION", "OR", "AND", "WHERE", "FROM",
-        "TABLE", "DATABASE", "SCHEMA", "TRUNCATE", "REPLACE",
+    # SQL 注入模式
+    SQL_PATTERNS = [
+        r"(\b(SELECT|INSERT|UPDATE|DELETE|DROP|CREATE|ALTER|EXEC|EXECUTE|UNION|TRUNCATE)\b)",
+        r"(--|#|/\*|\*/)",
+        r"(\bOR\b|\bAND\b)\s+\d+\s*=\s*\d+",
     ]
     
-    # 危险字符
-    DANGEROUS_CHARS = ["<", ">", "\"", "'", "&", "%", ";", "(", ")", "{", "}", "`"]
+    # XSS 模式
+    XSS_PATTERNS = [
+        r"<script[^>]*>.*?</script>",
+        r"javascript:",
+        r"on\w+\s*=\s*['\"]",
+        r"<iframe[^>]*>",
+    ]
+    
+    # Shell 注入模式
+    SHELL_PATTERNS = [
+        r"[;&|`$()]",
+        r"\b(rm|mv|cp|cat|ls|chmod|chown|sudo)\b",
+        r">>",
+    ]
     
     # 路径遍历模式
-    PATH_TRAVERSAL = re.compile(r"\.\.+|^[~/]|\\x00")
+    PATH_PATTERNS = [
+        r"\.\./",
+        r"\.\.\\",
+        r"%2e%2e%2f",
+    ]
     
-    @classmethod
-    def sanitize_string(cls, value: str, max_length: int = 1000) -> str:
-        """消毒字符串"""
-        if not isinstance(value, str):
-            value = str(value)
-        
-        # 截断过长输入
-        if len(value) > max_length:
-            value = value[:max_length]
-        
-        # 转义 HTML 特殊字符
-        value = value.replace("&", "&amp;")
-        value = value.replace("<", "&lt;")
-        value = value.replace(">", "&gt;")
-        value = value.replace('"', "&quot;")
-        value = value.replace("'", "&#x27;")
-        
-        # 移除 NULL 字节
-        value = value.replace("\x00", "")
-        
-        return value
-    
-    @classmethod
-    def sanitize_path(cls, path: str) -> Optional[str]:
-        """消毒路径"""
-        if not path:
-            return None
-        
-        # 检查路径遍历
-        if cls.PATH_TRAVERSAL.search(path):
-            return None
-        
-        # 规范化路径
-        path = os.path.normpath(path)
-        
-        # 检查是否包含 .. 遍历
-        if ".." in path.split(os.sep):
-            return None
-        
-        return path
-    
-    @classmethod
-    def sanitize_sql(cls, value: str) -> str:
-        """SQL 输入消毒（仅用于标识符/值，不用于完整的 SQL 构造）"""
-        # 移除非安全字符
-        safe = re.sub(r"[^a-zA-Z0-9_\-\.]", "", value)
-        return safe
-    
-    @classmethod
-    def check_sql_injection(cls, value: str) -> bool:
-        """检查 SQL 注入风险"""
-        upper = value.upper()
-        score = 0
-        for keyword in cls.SQL_KEYWORDS:
-            if keyword in upper:
-                score += 1
-        
-        # 风险阈值
-        return score >= 2
-    
-    @classmethod
-    def sanitize_command(cls, command: str) -> Optional[str]:
-        """消毒命令（防止命令注入）"""
-        # 禁止的命令分隔符
-        dangerous = [";", "|", "&&", "||", "`", "$", "(", ")"]
-        for char in dangerous:
-            if char in command:
-                return None
-        
-        return command.strip()
-    
-    @classmethod
-    def sanitize_filename(cls, filename: str) -> Optional[str]:
-        """消毒文件名"""
-        # 移除路径分隔符
-        filename = os.path.basename(filename)
-        
-        # 移除控制字符
-        filename = "".join(c for c in filename if ord(c) >= 32 and ord(c) < 127)
-        
-        # 检查危险扩展名
-        dangerous_ext = [".exe", ".bat", ".cmd", ".sh", ".dll", ".so"]
-        lower = filename.lower()
-        for ext in dangerous_ext:
-            if lower.endswith(ext):
-                return None
-        
-        return filename if filename else None
-
-
-class SecurityAudit:
-    """安全审计日志"""
-    
-    def __init__(self, log_dir: Path):
-        self.log_dir = log_dir
-        self.log_dir.mkdir(parents=True, exist_ok=True)
-        self._log_file = self.log_dir / f"security_audit_{datetime.now().strftime('%Y%m')}.log"
-        self._lock = threading.Lock()
-    
-    def log(self, event_type: str, details: Dict[str, Any], success: bool = True) -> None:
-        """记录安全事件"""
-        entry = {
-            "timestamp": time.time(),
-            "datetime": datetime.now().isoformat(),
-            "event_type": event_type,
-            "details": details,
-            "success": success,
+    def __init__(self):
+        self._patterns: Dict[str, List[str]] = {
+            "sql": self.SQL_PATTERNS,
+            "xss": self.XSS_PATTERNS,
+            "shell": self.SHELL_PATTERNS,
+            "path": self.PATH_PATTERNS,
         }
+    
+    def sanitize(self, data: str, context: str = "") -> str:
+        """消毒输入"""
+        if not data:
+            return data
         
-        with self._lock:
-            with open(self._log_file, "a", encoding="utf-8") as f:
-                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
-    
-    def log_auth_attempt(self, user: str, method: str, success: bool, details: Optional[Dict] = None) -> None:
-        """记录认证尝试"""
-        self.log("AUTH_ATTEMPT", {
-            "user": user,
-            "method": method,
-            "details": details or {},
-        }, success)
-    
-    def log_permission_check(self, action: str, allowed: bool, level: int) -> None:
-        """记录权限检查"""
-        self.log("PERMISSION_CHECK", {
-            "action": action,
-            "allowed": allowed,
-            "level": level,
-        }, allowed)
-    
-    def log_file_access(self, filepath: str, operation: str, success: bool) -> None:
-        """记录文件访问"""
-        self.log("FILE_ACCESS", {
-            "path": filepath,
-            "operation": operation,
-        }, success)
-    
-    def log_encryption_operation(self, operation: str, success: bool) -> None:
-        """记录加密操作"""
-        self.log("ENCRYPTION", {"operation": operation}, success)
-    
-    def query(self, event_type: Optional[str] = None, start_time: Optional[float] = None, limit: int = 100) -> List[Dict[str, Any]]:
-        """查询审计日志"""
-        results = []
+        import re
         
-        for log_file in sorted(self.log_dir.glob("security_audit_*.log"), reverse=True):
-            with open(log_file, "r", encoding="utf-8") as f:
-                for line in f:
-                    try:
-                        entry = json.loads(line.strip())
-                        if event_type and entry.get("event_type") != event_type:
-                            continue
-                        if start_time and entry.get("timestamp", 0) < start_time:
-                            continue
-                        results.append(entry)
-                    except json.JSONDecodeError:
-                        continue
-            
-            if len(results) >= limit:
-                break
+        # 根据上下文选择模式
+        patterns = self._patterns.get(context, [])
         
-        return results[:limit]
+        if not patterns:
+            # 通用消毒：移除控制字符
+            return re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", data)
+        
+        result = data
+        for pattern in patterns:
+            result = re.sub(pattern, "", result, flags=re.IGNORECASE)
+        
+        return result
+    
+    def validate(self, data: str, context: str = "") -> bool:
+        """验证输入是否安全"""
+        sanitized = self.sanitize(data, context)
+        return sanitized == data
 
 
 class SecurityManager:
-    """安全管理器：整合所有安全功能"""
+    """安全模块：整合所有安全功能"""
     
     def __init__(self, root: Path, master_password: Optional[str] = None, config: Optional[Dict] = None):
         self.root = root
         self.config = config or {}
         
-        # 初始化组件
+        # 子模块
         self.crypto = CryptoManager()
-        self.signature = SignatureManager()
         self.vault = CredentialVault(root, master_password)
         self.sanitizer = InputSanitizer()
-        self.audit = SecurityAudit(root / "logs" / "security")
         
-        # 安全设置
-        self._max_auth_attempts = self.config.get("max_auth_attempts", 5)
-        self._lockout_duration = self.config.get("lockout_duration_seconds", 300)
-        self._auth_attempts: Dict[str, List[float]] = {}
-        self._lock = threading.Lock()
-    
-    def check_rate_limit(self, identifier: str) -> bool:
-        """检查是否被速率限制"""
-        with self._lock:
-            now = time.time()
-            attempts = self._auth_attempts.get(identifier, [])
-            # 清理过期记录
-            attempts = [t for t in attempts if now - t < self._lockout_duration]
-            self._auth_attempts[identifier] = attempts
-            
-            if len(attempts) >= self._max_auth_attempts:
-                self.audit.log("RATE_LIMIT", {"identifier": identifier, "attempts": len(attempts)}, False)
-                return False
-            
-            return True
-    
-    def record_auth_attempt(self, identifier: str, success: bool) -> None:
-        """记录认证尝试"""
-        with self._lock:
-            if identifier not in self._auth_attempts:
-                self._auth_attempts[identifier] = []
-            self._auth_attempts[identifier].append(time.time())
+        # 审计日志
+        self.audit_dir = root / "logs" / "security"
+        self.audit_dir.mkdir(parents=True, exist_ok=True)
+        self.audit_file = self.audit_dir / "audit.jsonl"
+        self._audit_lock = threading.Lock()
+        
+        # 速率限制
+        self._rate_limits: Dict[str, List[float]] = {}
+        self._rate_limit_lock = threading.Lock()
+        self._max_requests = self.config.get("max_requests_per_minute", 100)
+        
+        # 签名
+        self.signer = SignatureManager()
     
     def encrypt_sensitive(self, data: str, context: str = "") -> str:
         """加密敏感数据"""
-        associated = context.encode() if context else None
-        encrypted = self.crypto.encrypt_string(data, associated)
-        self.audit.log_encryption_operation(f"encrypt:{context}", True)
+        associated_data = context.encode("utf-8") if context else None
+        encrypted = self.crypto.encrypt_string(data, associated_data)
+        self.log_audit_event("encryption", {"context": context, "algorithm": "AES-256-GCM"})
         return encrypted
     
-    def decrypt_sensitive(self, encrypted: str, context: str = "") -> str:
+    def decrypt_sensitive(self, data: str, context: str = "") -> str:
         """解密敏感数据"""
-        try:
-            associated = context.encode() if context else None
-            decrypted = self.crypto.decrypt_string(encrypted, associated)
-            self.audit.log_encryption_operation(f"decrypt:{context}", True)
-            return decrypted
-        except Exception as e:
-            self.audit.log_encryption_operation(f"decrypt:{context}", False)
-            raise EncryptionError(f"解密失败: {e}")
+        associated_data = context.encode("utf-8") if context else None
+        return self.crypto.decrypt_string(data, associated_data)
     
-    def store_credential(self, key: str, value: str) -> None:
-        """安全存储凭据"""
-        self.vault.store(key, value)
-        self.audit.log("CREDENTIAL_STORE", {"key": key}, True)
+    def hash_password(self, password: str) -> str:
+        """哈希密码"""
+        return self.crypto.hash_password(password)
+    
+    def verify_password(self, password: str, hash_string: str) -> bool:
+        """验证密码"""
+        return self.crypto.verify_password(password, hash_string)
+    
+    def sign_data(self, data: str, context: str = "") -> str:
+        """签名数据"""
+        return self.signer.sign(data)
+    
+    def verify_signature(self, data: str, signature: str, context: str = "") -> bool:
+        """验证签名"""
+        return self.signer.verify(data, signature)
+    
+    def store_credential(self, key: str, value: str, metadata: Optional[Dict] = None) -> None:
+        """存储凭据"""
+        self.vault.store(key, value, metadata)
+        self.log_audit_event("credential_store", {"key": key})
     
     def retrieve_credential(self, key: str) -> Optional[str]:
-        """安全检索凭据"""
-        value = self.vault.retrieve(key)
-        self.audit.log("CREDENTIAL_RETRIEVE", {"key": key}, value is not None)
-        return value
+        """检索凭据"""
+        self.log_audit_event("credential_retrieve", {"key": key})
+        return self.vault.retrieve(key)
     
-    def sign_file(self, filepath: Union[str, Path]) -> str:
-        """签名文件"""
-        signature = self.signature.sign_file(filepath)
-        self.audit.log("FILE_SIGN", {"path": str(filepath)}, True)
-        return signature
-    
-    def verify_file(self, filepath: Union[str, Path], signature: str) -> bool:
-        """验证文件签名"""
-        result = self.signature.verify_file(filepath, signature)
-        self.audit.log("FILE_VERIFY", {"path": str(filepath)}, result)
-        return result
-    
-    def sanitize_input(self, value: str, input_type: str = "string") -> Optional[str]:
+    def sanitize_input(self, data: str, context: str = "") -> str:
         """消毒输入"""
-        if input_type == "string":
-            return self.sanitizer.sanitize_string(value)
-        elif input_type == "path":
-            return self.sanitizer.sanitize_path(value)
-        elif input_type == "filename":
-            return self.sanitizer.sanitize_filename(value)
-        elif input_type == "command":
-            return self.sanitizer.sanitize_command(value)
-        else:
-            return self.sanitizer.sanitize_string(value)
+        return self.sanitizer.sanitize(data, context)
     
-    def generate_secure_token(self, length: int = 32) -> str:
-        """生成安全令牌"""
-        return secrets.token_urlsafe(length)
+    def validate_input(self, data: str, context: str = "") -> bool:
+        """验证输入"""
+        return self.sanitizer.validate(data, context)
     
-    def get_stats(self) -> Dict[str, Any]:
-        """获取安全统计"""
-        return {
-            "crypto_backend": _CRYPTO_BACKEND or "none",
-            "vault_credentials": len(self.vault.list_keys()),
-            "audit_entries": len(self.audit.query(limit=1)),
-            "rate_limited": len([k for k, v in self._auth_attempts.items() if len(v) >= self._max_auth_attempts]),
+    def check_rate_limit(self, client_id: str) -> bool:
+        """检查速率限制"""
+        now = time.time()
+        
+        with self._rate_limit_lock:
+            if client_id not in self._rate_limits:
+                self._rate_limits[client_id] = []
+            
+            # 清理过期记录
+            self._rate_limits[client_id] = [
+                t for t in self._rate_limits[client_id]
+                if now - t < 60
+            ]
+            
+            if len(self._rate_limits[client_id]) >= self._max_requests:
+                return False
+            
+            self._rate_limits[client_id].append(now)
+            return True
+    
+    def log_audit_event(self, event_type: str, details: Dict[str, Any]) -> None:
+        """记录审计事件"""
+        event = {
+            "timestamp": time.time(),
+            "type": event_type,
+            "details": details,
         }
+        
+        with self._audit_lock:
+            with open(self.audit_file, "a", encoding="utf-8") as f:
+                f.write(json.dumps(event, ensure_ascii=False) + "\n")
     
-    def shutdown(self) -> None:
-        """关闭安全模块"""
-        # 安全擦除密钥
-        key = self.crypto._key
-        if isinstance(key, (bytearray, memoryview)):
-            self.crypto.secure_wipe(key)
+    def get_audit_events(self, limit: int = 100, event_type: Optional[str] = None) -> List[Dict]:
+        """获取审计事件"""
+        if not self.audit_file.exists():
+            return []
+        
+        events = []
+        with self._audit_lock:
+            with open(self.audit_file, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        event = json.loads(line)
+                        if event_type is None or event.get("type") == event_type:
+                            events.append(event)
+                    except json.JSONDecodeError:
+                        continue
+        
+        return events[-limit:]
 
 
 if __name__ == "__main__":
-    # 示例用法
-    import tempfile
+    # 测试代码
+    security = SecurityManager(Path("."))
     
-    with tempfile.TemporaryDirectory() as tmpdir:
-        root = Path(tmpdir)
-        
-        # 初始化安全模块
-        security = SecurityManager(root, master_password="test_password")
-        
-        # 加密/解密
-        plaintext = "敏感信息: API Key = sk-1234567890"
-        encrypted = security.encrypt_sensitive(plaintext, "api_key")
-        print(f"加密: {encrypted[:50]}...")
-        
-        decrypted = security.decrypt_sensitive(encrypted, "api_key")
-        print(f"解密: {decrypted}")
-        
-        # 密码哈希
-        password_hash = security.crypto.hash_password("my_password")
-        print(f"密码哈希: {password_hash[:30]}...")
-        print(f"验证密码: {security.crypto.verify_password('my_password', password_hash)}")
-        
-        # 凭据保险箱
-        security.store_credential("api_key", "sk-1234567890")
-        print(f"凭据: {security.retrieve_credential('api_key')}")
-        
-        # 输入消毒
-        dirty_input = "<script>alert('xss')</script>"
-        clean = security.sanitize_input(dirty_input)
-        print(f"消毒: {clean}")
-        
-        # 文件签名
-        test_file = root / "test.txt"
-        test_file.write_text("test content")
-        sig = security.sign_file(test_file)
-        print(f"文件签名: {sig[:30]}...")
-        print(f"验证签名: {security.verify_file(test_file, sig)}")
-        
-        # 审计日志
-        security.audit.log_auth_attempt("user1", "password", True)
-        print(f"审计日志: {security.audit.query(limit=1)}")
-        
-        # 统计
-        print(f"\n安全统计: {security.get_stats()}")
-        
-        security.shutdown()
+    # 测试加密
+    encrypted = security.encrypt_sensitive("Hello, 灵枢!", context="test")
+    print(f"加密: {encrypted}")
+    decrypted = security.decrypt_sensitive(encrypted, context="test")
+    print(f"解密: {decrypted}")
+    
+    # 测试密码
+    password_hash = security.hash_password("my_password")
+    print(f"密码哈希: {password_hash}")
+    print(f"验证: {security.verify_password('my_password', password_hash)}")
+    
+    # 测试消毒
+    dirty = "<script>alert('xss')</script>"
+    clean = security.sanitize_input(dirty, "html")
+    print(f"消毒: {clean}")
+    
+    # 测试凭据
+    security.store_credential("api_key", "secret123", {"service": "test"})
+    value = security.retrieve_credential("api_key")
+    print(f"凭据: {value}")

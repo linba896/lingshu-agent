@@ -29,7 +29,7 @@ import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, asdict
 from datetime import datetime, timedelta
 from enum import Enum, auto
 from pathlib import Path
@@ -180,13 +180,14 @@ class TaskRecord:
             "completed_at": self.completed_at,
             "execution_count": self.execution_count,
             "retry_count": self.retry_count,
+            "last_result": str(self.last_result) if self.last_result is not None else None,
             "last_error": self.last_error,
             "next_run_time": self.next_run_time,
         }
 
 
 class Task:
-    """任务封装"""
+    """任务对象"""
     
     def __init__(
         self,
@@ -399,221 +400,144 @@ class TaskScheduler:
     def stop(self) -> None:
         """停止调度器"""
         self._scheduler_running = False
+        if self._scheduler_thread:
+            self._scheduler_thread.join(timeout=5.0)
+            self._scheduler_thread = None
         
         # 取消所有运行中的任务
         for future in self._running_futures.values():
             future.cancel()
+        self._running_futures.clear()
         
         self._executor.shutdown(wait=False)
-        
-        if self._scheduler_thread:
-            self._scheduler_thread.join(timeout=5.0)
-        
-        self._persist()
         print("[TaskScheduler] 调度器已停止")
     
     def _scheduler_loop(self) -> None:
-        """调度主循环"""
+        """调度循环"""
         while self._scheduler_running:
             try:
-                self._process_scheduled_tasks()
+                self._check_and_execute()
                 time.sleep(0.5)
             except Exception as e:
                 print(f"[TaskScheduler] 调度错误: {e}")
     
-    def _process_scheduled_tasks(self) -> None:
-        """处理已调度的任务"""
+    def _check_and_execute(self) -> None:
+        """检查并执行任务"""
         now = time.time()
-        tasks_to_run = []
         
         with self._lock:
-            # 检查所有任务
-            for task_id, task in self._tasks.items():
-                if task._cancelled or task._paused:
-                    continue
-                
-                if task.record.state in [TaskState.RUNNING, TaskState.RETRYING]:
-                    continue
-                
-                # 检查依赖
-                if not self._check_dependencies(task):
-                    continue
-                
-                # 检查触发器
-                if task.trigger.should_trigger(
-                    task.record.completed_at or 0,
-                    task.record.execution_count,
-                ):
-                    tasks_to_run.append(task)
-            
-            # 按优先级排序
-            tasks_to_run.sort(key=lambda t: t.config.priority.value)
+            tasks_to_check = list(self._tasks.values())
         
-        # 执行任务
-        for task in tasks_to_run[:self.max_workers]:
-            self._execute_task(task)
-    
-    def _check_dependencies(self, task: Task) -> bool:
-        """检查任务依赖是否满足"""
-        for dep_id in task.config.dependencies:
-            dep_task = self._tasks.get(dep_id)
-            if not dep_task:
-                return False
-            if dep_task.record.state != TaskState.COMPLETED:
-                return False
-        return True
-    
-    def _execute_task(self, task: Task) -> None:
-        """执行任务"""
-        try:
-            future = self._executor.submit(task.run)
-            self._running_futures[task.task_id] = future
+        for task in tasks_to_check:
+            # 检查状态
+            if task.record.state in [TaskState.CANCELLED, TaskState.PAUSED, TaskState.RUNNING]:
+                continue
             
-            # 添加回调
-            future.add_done_callback(lambda f, tid=task.task_id: self._task_completed(tid, f))
+            # 检查依赖
+            if task.config.dependencies:
+                deps_satisfied = all(
+                    self._task_states.get(dep) == TaskState.COMPLETED
+                    for dep in task.config.dependencies
+                )
+                if not deps_satisfied:
+                    if task.record.state != TaskState.SKIPPED:
+                        task.record.state = TaskState.SKIPPED
+                    continue
             
-        except Exception as e:
-            print(f"[TaskScheduler] 任务提交失败 {task.task_id}: {e}")
-            task.record.state = TaskState.FAILED
-            task.record.last_error = str(e)
+            # 检查触发条件
+            if task.trigger.should_trigger(
+                last_execution=task.record.completed_at or 0,
+                execution_count=task.record.execution_count,
+            ):
+                # 提交执行
+                self._submit_task(task)
     
-    def _task_completed(self, task_id: str, future) -> None:
-        """任务完成回调"""
+    def _submit_task(self, task: Task) -> None:
+        """提交任务执行"""
         with self._lock:
-            self._running_futures.pop(task_id, None)
-            
-            task = self._tasks.get(task_id)
-            if not task:
+            if task.task_id in self._running_futures:
                 return
             
+            task.record.state = TaskState.SCHEDULED
+            task.record.scheduled_at = time.time()
+        
+        # 提交到线程池
+        future = self._executor.submit(self._execute_with_retry, task)
+        self._running_futures[task.task_id] = future
+    
+    def _execute_with_retry(self, task: Task) -> None:
+        """带重试的执行"""
+        max_retries = task.config.max_retries
+        retry_count = 0
+        
+        while retry_count <= max_retries:
             try:
-                result = future.result()
-                task.record.last_result = result
-                task.record.state = TaskState.COMPLETED
+                result = task.run()
                 
-                # 计算下次执行时间
-                next_time = task.trigger.next_trigger_time(time.time())
-                task.record.next_run_time = next_time
+                with self._lock:
+                    self._task_states[task.task_id] = TaskState.COMPLETED
+                    self._completed_tasks.append(task.record)
+                    if len(self._completed_tasks) > 1000:
+                        self._completed_tasks = self._completed_tasks[-500:]
                 
-                # 重新加入队列（如果是重复任务）
-                if task.trigger.type in [TriggerType.INTERVAL, TriggerType.CRON]:
-                    if next_time:
-                        priority = task.config.priority.value
-                        self._task_queue.put((priority, next_time, task_id))
-                
-                # 触发事件
-                self._fire_event("task.completed", task.record)
+                self._persist()
+                return
                 
             except Exception as e:
-                task.record.state = TaskState.FAILED
-                task.record.last_error = str(e)
+                retry_count += 1
+                task.record.retry_count = retry_count
                 
-                # 重试
-                if task.record.retry_count < task.config.max_retries:
-                    task.record.retry_count += 1
-                    task.record.state = TaskState.RETRYING
+                if retry_count > max_retries:
+                    with self._lock:
+                        self._task_states[task.task_id] = TaskState.FAILED
                     
-                    # 指数退避
-                    delay = min(
-                        task.config.retry_delay_base * (2 ** task.record.retry_count),
-                        task.config.retry_delay_max,
-                    )
-                    
-                    threading.Timer(delay, self._execute_task, args=[task]).start()
-                    
-                    self._fire_event("task.retry", task.record)
-                else:
-                    self._fire_event("task.failed", task.record)
-                    
-                    # 如果配置了跳过失败，继续执行后续任务
-                    if task.config.skip_on_failure:
-                        pass
-            
-            # 记录完成
-            self._completed_tasks.append(task.record)
-            if len(self._completed_tasks) > 1000:
-                self._completed_tasks = self._completed_tasks[-500:]
-            
-            self._persist()
-    
-    def _fire_event(self, event_name: str, data: Any) -> None:
-        """触发事件"""
-        handlers = self._event_handlers.get(event_name, [])
-        for handler in handlers:
-            try:
-                handler(data)
-            except Exception as e:
-                print(f"[TaskScheduler] 事件处理错误: {e}")
-    
-    def on_event(self, event_name: str, handler: Callable) -> None:
-        """注册事件处理器"""
-        if event_name not in self._event_handlers:
-            self._event_handlers[event_name] = []
-        self._event_handlers[event_name].append(handler)
-    
-    def schedule_once(
-        self,
-        name: str,
-        func: Callable,
-        delay_seconds: float = 0,
-        priority: TaskPriority = TaskPriority.NORMAL,
-        *args,
-        **kwargs,
-    ) -> Task:
-        """调度一次性任务"""
-        trigger = TaskTrigger(
-            type=TriggerType.DELAY if delay_seconds > 0 else TriggerType.IMMEDIATE,
-            delay_seconds=delay_seconds,
-        )
+                    print(f"[TaskScheduler] 任务最终失败: {task.name} - {e}")
+                    self._persist()
+                    return
+                
+                # 指数退避
+                delay = min(
+                    task.config.retry_delay_base * (2 ** (retry_count - 1)),
+                    task.config.retry_delay_max,
+                )
+                print(f"[TaskScheduler] 任务重试: {task.name} (第{retry_count}次, {delay:.1f}s后)")
+                time.sleep(delay)
         
-        config = TaskConfig(priority=priority, max_retries=0)
-        
-        # 包装函数以传入参数
-        wrapped = lambda: func(*args, **kwargs)
-        
-        return self.add_task(name, wrapped, trigger, config)
+        finally:
+            with self._lock:
+                self._running_futures.pop(task.task_id, None)
     
-    def schedule_interval(
-        self,
-        name: str,
-        func: Callable,
-        interval_seconds: float,
-        max_executions: int = 0,
-        priority: TaskPriority = TaskPriority.NORMAL,
-        *args,
-        **kwargs,
-    ) -> Task:
-        """调度间隔任务"""
+    def schedule_interval(self, name: str, func: Callable, interval_seconds: float, *args, **kwargs) -> Task:
+        """创建间隔任务"""
         trigger = TaskTrigger(
             type=TriggerType.INTERVAL,
             interval_seconds=interval_seconds,
-            max_executions=max_executions,
         )
-        
-        config = TaskConfig(priority=priority)
-        wrapped = lambda: func(*args, **kwargs)
-        
-        return self.add_task(name, wrapped, trigger, config)
+        return self.add_task(name, func, trigger)
     
-    def schedule_at(
-        self,
-        name: str,
-        func: Callable,
-        execute_time: float,
-        priority: TaskPriority = TaskPriority.NORMAL,
-        *args,
-        **kwargs,
-    ) -> Task:
-        """调度定时任务"""
+    def schedule_delay(self, name: str, func: Callable, delay_seconds: float, *args, **kwargs) -> Task:
+        """创建延迟任务"""
+        trigger = TaskTrigger(
+            type=TriggerType.DELAY,
+            delay_seconds=delay_seconds,
+        )
+        return self.add_task(name, func, trigger)
+    
+    def schedule_cron(self, name: str, func: Callable, cron_expression: str, *args, **kwargs) -> Task:
+        """创建 Cron 任务（简化实现）"""
+        trigger = TaskTrigger(
+            type=TriggerType.CRON,
+            cron_expression=cron_expression,
+        )
+        return self.add_task(name, func, trigger)
+    
+    def schedule_once(self, name: str, func: Callable, execute_at: float, *args, **kwargs) -> Task:
+        """创建一次性任务"""
         trigger = TaskTrigger(
             type=TriggerType.ONCE,
-            execute_at=execute_time,
+            execute_at=execute_at,
         )
-        
-        config = TaskConfig(priority=priority, max_retries=0)
-        wrapped = lambda: func(*args, **kwargs)
-        
-        return self.add_task(name, wrapped, trigger, config)
+        return self.add_task(name, func, trigger)
     
     def cancel_task(self, task_id: str) -> bool:
         """取消任务"""
@@ -636,70 +560,47 @@ class TaskScheduler:
             return task.resume()
         return False
     
+    def get_completed_tasks(self, limit: int = 100) -> List[TaskRecord]:
+        """获取已完成的任务"""
+        return self._completed_tasks[-limit:]
+    
     def get_stats(self) -> Dict[str, Any]:
-        """获取统计"""
+        """获取统计信息"""
         with self._lock:
+            total = len(self._tasks)
             states = {}
-            for state in TaskState:
-                states[state.name] = sum(1 for t in self._tasks.values() if t.record.state == state)
+            for task in self._tasks.values():
+                state_name = task.record.state.name
+                states[state_name] = states.get(state_name, 0) + 1
             
             return {
-                "total_tasks": len(self._tasks),
-                "running_tasks": len(self._running_futures),
-                "completed_history": len(self._completed_tasks),
+                "total": total,
                 "states": states,
-                "max_workers": self.max_workers,
-                "scheduler_running": self._scheduler_running,
+                "completed_history": len(self._completed_tasks),
+                "running": len(self._running_futures),
             }
-    
-    def execute_now(self, task_id: str) -> bool:
-        """立即执行任务"""
-        task = self._tasks.get(task_id)
-        if not task or task.record.state == TaskState.RUNNING:
-            return False
-        
-        self._execute_task(task)
-        return True
-    
-    def shutdown(self) -> None:
-        """关闭调度器"""
-        self.stop()
 
 
 if __name__ == "__main__":
-    # 示例用法
-    import tempfile
+    # 测试代码
+    scheduler = TaskScheduler()
     
-    with tempfile.TemporaryDirectory() as tmpdir:
-        persist_path = Path(tmpdir) / "tasks.json"
-        
-        scheduler = TaskScheduler(max_workers=2, persistence_path=persist_path)
-        
-        # 定义示例任务
-        def my_task(name: str) -> str:
-            time.sleep(0.5)
-            return f"任务完成: {name}"
-        
-        # 立即执行
-        task1 = scheduler.schedule_once("即时任务", my_task, 0, TaskPriority.HIGH, "即时")
-        
-        # 延迟执行
-        task2 = scheduler.schedule_once("延迟任务", my_task, 2, TaskPriority.NORMAL, "延迟")
-        
-        # 间隔执行
-        task3 = scheduler.schedule_interval("间隔任务", my_task, 3, 3, TaskPriority.LOW, "间隔")
-        
-        # 启动调度器
-        scheduler.start()
-        
-        # 等待执行
-        time.sleep(4)
-        
-        # 查看状态
-        print(f"\n调度器统计: {scheduler.get_stats()}")
-        
-        # 列出任务
-        for record in scheduler.list_tasks():
-            print(f"  {record.name}: {record.state.name} (执行 {record.execution_count} 次)")
-        
-        scheduler.shutdown()
+    def hello_task():
+        print("Hello from task!")
+        return "done"
+    
+    # 添加间隔任务
+    task = scheduler.schedule_interval("hello", hello_task, 5.0)
+    print(f"任务已添加: {task.task_id}")
+    
+    # 启动调度器
+    scheduler.start()
+    
+    # 运行 20 秒
+    time.sleep(20)
+    
+    # 停止
+    scheduler.stop()
+    
+    # 统计
+    print(f"统计: {scheduler.get_stats()}")

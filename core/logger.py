@@ -24,6 +24,7 @@ from __future__ import annotations
 import functools
 import hashlib
 import json
+import logging
 import os
 import queue
 import re
@@ -31,7 +32,6 @@ import sys
 import threading
 import time
 import traceback
-from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import Enum
 from pathlib import Path
@@ -52,6 +52,33 @@ class LogFormat(Enum):
     TEXT = "text"      # 人类可读
     JSON = "json"      # 结构化
     CSV = "csv"        # 表格
+
+
+class LogTarget:
+    """日志输出目标基类"""
+    
+    def __init__(self, level: LogLevel = LogLevel.DEBUG, format: LogFormat = LogFormat.TEXT):
+        self.level = level
+        self.format = format
+        self._lock = threading.Lock()
+    
+    def write(self, record: LogRecord) -> None:
+        raise NotImplementedError
+    
+    def flush(self) -> None:
+        pass
+    
+    def close(self) -> None:
+        pass
+    
+    def _format_record(self, record: LogRecord) -> str:
+        """格式化记录"""
+        if self.format == LogFormat.JSON:
+            return record.to_json()
+        elif self.format == LogFormat.CSV:
+            return record.to_csv()
+        else:
+            return record.to_text()
 
 
 @dataclass
@@ -109,33 +136,6 @@ class LogRecord:
         return f"\"{dt}\",\"{self.level.name}\",\"{self.module}\",\"{self.message}\",\"{exc}\""
 
 
-class LogTarget:
-    """日志输出目标基类"""
-    
-    def __init__(self, level: LogLevel = LogLevel.DEBUG, format: LogFormat = LogFormat.TEXT):
-        self.level = level
-        self.format = format
-        self._lock = threading.Lock()
-    
-    def write(self, record: LogRecord) -> None:
-        raise NotImplementedError
-    
-    def flush(self) -> None:
-        pass
-    
-    def close(self) -> None:
-        pass
-    
-    def _format_record(self, record: LogRecord) -> str:
-        """格式化记录"""
-        if self.format == LogFormat.JSON:
-            return record.to_json()
-        elif self.format == LogFormat.CSV:
-            return record.to_csv()
-        else:
-            return record.to_text()
-
-
 class ConsoleTarget(LogTarget):
     """控制台输出目标"""
     
@@ -158,43 +158,32 @@ class ConsoleTarget(LogTarget):
         
         text = self._format_record(record)
         
-        if self.use_color and self.format == LogFormat.TEXT:
-            color = self.LEVEL_COLORS.get(record.level, "")
+        if self.use_color and record.level in self.LEVEL_COLORS:
+            color = self.LEVEL_COLORS[record.level]
             text = f"{color}{text}{self.RESET}"
         
-        with self._lock:
-            if record.level.value >= LogLevel.ERROR.value:
-                sys.stderr.write(text + "\n")
-                sys.stderr.flush()
-            else:
-                sys.stdout.write(text + "\n")
-                sys.stdout.flush()
+        print(text)
+    
+    def flush(self) -> None:
+        sys.stdout.flush()
 
 
 class FileTarget(LogTarget):
-    """文件输出目标（支持轮转）"""
+    """文件输出目标"""
     
-    def __init__(
-        self,
-        filepath: Union[str, Path],
-        level: LogLevel = LogLevel.DEBUG,
-        format: LogFormat = LogFormat.JSON,
-        max_size_mb: float = 10,
-        max_backups: int = 5,
-        rotate_daily: bool = False,
-    ):
+    def __init__(self, filepath: Path, level: LogLevel = LogLevel.DEBUG, format: LogFormat = LogFormat.TEXT, max_size: int = 10 * 1024 * 1024, max_backups: int = 5, rotate_daily: bool = False):
         super().__init__(level, format)
         self.filepath = Path(filepath)
-        self.filepath.parent.mkdir(parents=True, exist_ok=True)
-        self.max_size = max_size_mb * 1024 * 1024
+        self.max_size = max_size
         self.max_backups = max_backups
         self.rotate_daily = rotate_daily
+        self._file = None
         self._current_date = datetime.now().date()
-        self._file: Optional[Any] = None
         self._open_file()
     
     def _open_file(self) -> None:
-        """打开日志文件"""
+        """打开文件"""
+        self.filepath.parent.mkdir(parents=True, exist_ok=True)
         self._file = open(self.filepath, "a", encoding="utf-8")
     
     def _should_rotate(self) -> bool:
@@ -377,6 +366,7 @@ class LogContext:
         cls._local.context = {}
     
     @classmethod
+    @contextmanager
     def scope(cls, **kwargs):
         """上下文作用域"""
         old = cls.get_context().copy()
@@ -396,74 +386,59 @@ class Logger:
         level: LogLevel = LogLevel.INFO,
         targets: Optional[List[LogTarget]] = None,
         async_mode: bool = True,
-        sensitive_filter: Optional[SensitiveFilter] = None,
+        sanitize: bool = True,
     ):
         self.name = name
         self.level = level
-        self._targets = targets or []
-        self._async_mode = async_mode
-        self._sensitive_filter = sensitive_filter or SensitiveFilter()
+        self._sanitize = sanitize
+        self._filter = SensitiveFilter() if sanitize else None
         
+        # 目标
+        self._targets: List[LogTarget] = list(targets) if targets else []
+        
+        # 异步模式
+        self._async_mode = async_mode
         self._async_queue: Optional[AsyncLogQueue] = None
         if async_mode and self._targets:
             self._async_queue = AsyncLogQueue(self._targets)
             self._async_queue.start()
         
-        self._query_index: List[LogRecord] = []  # 内存索引（用于查询）
-        self._max_index_size = 10000
-        self._query_lock = threading.Lock()
+        # 内存缓存（最近 1000 条）
+        self._recent_logs: List[LogRecord] = []
+        self._recent_lock = threading.Lock()
+        self._max_recent = 1000
     
-    def _create_record(
-        self,
-        level: LogLevel,
-        message: str,
-        exception: Optional[Exception] = None,
-        **kwargs,
-    ) -> LogRecord:
+    def _create_record(self, level: LogLevel, message: str, exception: Optional[BaseException] = None) -> LogRecord:
         """创建日志记录"""
-        # 获取调用信息
+        # 获取调用者信息
         frame = sys._getframe(2)
         source_file = frame.f_code.co_filename
         source_line = frame.f_lineno
         function = frame.f_code.co_name
         
-        # 合并上下文
-        context = LogContext.get_context().copy()
-        context.update(kwargs)
+        # 脱敏
+        if self._filter:
+            message = self._filter.filter(message)
         
-        # 过滤敏感信息
-        message = self._sensitive_filter.filter(message)
-        
-        # 异常信息
-        exc_str = None
-        if exception:
-            exc_str = "".join(traceback.format_exception(type(exception), exception, exception.__traceback__))
-            exc_str = self._sensitive_filter.filter(exc_str)
-        
-        return LogRecord(
+        record = LogRecord(
             timestamp=time.time(),
             level=level,
             module=self.name,
             message=message,
-            context=context,
-            exception=exc_str,
+            context=LogContext.get_context(),
+            exception=traceback.format_exc() if exception else None,
             source_file=source_file,
             source_line=source_line,
             function=function,
             thread_id=threading.get_ident(),
             process_id=os.getpid(),
         )
+        
+        return record
     
     def _write(self, record: LogRecord) -> None:
         """写入日志"""
-        # 索引记录
-        with self._query_lock:
-            self._query_index.append(record)
-            if len(self._query_index) > self._max_index_size:
-                self._query_index = self._query_index[-self._max_index_size:]
-        
-        # 输出
-        if self._async_mode and self._async_queue:
+        if self._async_queue:
             self._async_queue.put(record)
         else:
             for target in self._targets:
@@ -471,102 +446,41 @@ class Logger:
                     target.write(record)
                 except Exception:
                     pass
-    
-    def debug(self, message: str, **kwargs) -> None:
-        """调试日志"""
-        if self.level.value > LogLevel.DEBUG.value:
-            return
-        record = self._create_record(LogLevel.DEBUG, message, **kwargs)
-        self._write(record)
-    
-    def info(self, message: str, **kwargs) -> None:
-        """信息日志"""
-        if self.level.value > LogLevel.INFO.value:
-            return
-        record = self._create_record(LogLevel.INFO, message, **kwargs)
-        self._write(record)
-    
-    def warning(self, message: str, **kwargs) -> None:
-        """警告日志"""
-        if self.level.value > LogLevel.WARNING.value:
-            return
-        record = self._create_record(LogLevel.WARNING, message, **kwargs)
-        self._write(record)
-    
-    def error(self, message: str, exception: Optional[Exception] = None, **kwargs) -> None:
-        """错误日志"""
-        if self.level.value > LogLevel.ERROR.value:
-            return
-        record = self._create_record(LogLevel.ERROR, message, exception, **kwargs)
-        self._write(record)
-    
-    def critical(self, message: str, exception: Optional[Exception] = None, **kwargs) -> None:
-        """严重错误日志"""
-        record = self._create_record(LogLevel.CRITICAL, message, exception, **kwargs)
-        self._write(record)
-    
-    def log_performance(
-        self,
-        operation: str,
-        duration_ms: float,
-        success: bool = True,
-        **kwargs,
-    ) -> None:
-        """记录性能指标"""
-        self.info(
-            f"PERF: {operation} {'成功' if success else '失败'} 耗时 {duration_ms:.2f}ms",
-            operation=operation,
-            duration_ms=duration_ms,
-            success=success,
-            **kwargs,
-        )
-    
-    def timed(self, operation_name: str):
-        """计时装饰器"""
-        def decorator(func: Callable) -> Callable:
-            @functools.wraps(func)
-            def wrapper(*args, **kwargs):
-                start = time.time()
-                try:
-                    result = func(*args, **kwargs)
-                    duration = (time.time() - start) * 1000
-                    self.log_performance(operation_name, duration, True)
-                    return result
-                except Exception as e:
-                    duration = (time.time() - start) * 1000
-                    self.log_performance(operation_name, duration, False, error=str(e))
-                    raise
-            return wrapper
-        return decorator
-    
-    def query(
-        self,
-        level: Optional[LogLevel] = None,
-        module: Optional[str] = None,
-        start_time: Optional[float] = None,
-        end_time: Optional[float] = None,
-        message_contains: Optional[str] = None,
-        limit: int = 100,
-    ) -> List[LogRecord]:
-        """查询日志记录"""
-        with self._query_lock:
-            results = self._query_index.copy()
         
-        # 应用过滤
-        if level:
-            results = [r for r in results if r.level == level]
-        if module:
-            results = [r for r in results if r.module == module]
-        if start_time:
-            results = [r for r in results if r.timestamp >= start_time]
-        if end_time:
-            results = [r for r in results if r.timestamp <= end_time]
-        if message_contains:
-            results = [r for r in results if message_contains in r.message]
-        
-        # 按时间倒序
-        results.sort(key=lambda r: r.timestamp, reverse=True)
-        return results[:limit]
+        # 缓存到内存
+        with self._recent_lock:
+            self._recent_logs.append(record)
+            if len(self._recent_logs) > self._max_recent:
+                self._recent_logs = self._recent_logs[-self._max_recent:]
+    
+    def debug(self, message: str) -> None:
+        """DEBUG 级别日志"""
+        if self.level.value <= LogLevel.DEBUG.value:
+            self._write(self._create_record(LogLevel.DEBUG, message))
+    
+    def info(self, message: str) -> None:
+        """INFO 级别日志"""
+        if self.level.value <= LogLevel.INFO.value:
+            self._write(self._create_record(LogLevel.INFO, message))
+    
+    def warning(self, message: str) -> None:
+        """WARNING 级别日志"""
+        if self.level.value <= LogLevel.WARNING.value:
+            self._write(self._create_record(LogLevel.WARNING, message))
+    
+    def error(self, message: str, exception: Optional[BaseException] = None) -> None:
+        """ERROR 级别日志"""
+        if self.level.value <= LogLevel.ERROR.value:
+            self._write(self._create_record(LogLevel.ERROR, message, exception))
+    
+    def critical(self, message: str, exception: Optional[BaseException] = None) -> None:
+        """CRITICAL 级别日志"""
+        if self.level.value <= LogLevel.CRITICAL.value:
+            self._write(self._create_record(LogLevel.CRITICAL, message, exception))
+    
+    def set_level(self, level: LogLevel) -> None:
+        """设置日志级别"""
+        self.level = level
     
     def add_target(self, target: LogTarget) -> None:
         """添加输出目标"""
@@ -574,8 +488,32 @@ class Logger:
         if self._async_queue:
             self._async_queue.targets.append(target)
     
+    def remove_target(self, target: LogTarget) -> None:
+        """移除输出目标"""
+        if target in self._targets:
+            self._targets.remove(target)
+        if self._async_queue and target in self._async_queue.targets:
+            self._async_queue.targets.remove(target)
+    
+    def get_recent_logs(self, limit: int = 100, level: Optional[LogLevel] = None) -> List[LogRecord]:
+        """获取最近日志"""
+        with self._recent_lock:
+            logs = self._recent_logs
+            if level:
+                logs = [log for log in logs if log.level.value >= level.value]
+            return logs[-limit:]
+    
+    def search_logs(self, pattern: str, limit: int = 100) -> List[LogRecord]:
+        """搜索日志"""
+        import re
+        regex = re.compile(pattern, re.IGNORECASE)
+        
+        with self._recent_lock:
+            results = [log for log in self._recent_logs if regex.search(log.message)]
+            return results[-limit:]
+    
     def flush(self) -> None:
-        """刷新所有输出"""
+        """刷新所有目标"""
         if self._async_queue:
             self._async_queue.flush()
         for target in self._targets:
@@ -588,90 +526,43 @@ class Logger:
         for target in self._targets:
             target.close()
     
-    def get_stats(self) -> Dict[str, Any]:
-        """获取统计"""
-        return {
-            "name": self.name,
-            "level": self.level.name,
-            "targets_count": len(self._targets),
-            "async_mode": self._async_mode,
-            "indexed_records": len(self._query_index),
-            "dropped_records": self._async_queue.get_dropped_count() if self._async_queue else 0,
-        }
-
-
-# 全局日志器实例
-_default_logger: Optional[Logger] = None
-
-
-def get_logger(name: str = "lingshu") -> Logger:
-    """获取全局日志器"""
-    global _default_logger
-    if _default_logger is None:
-        _default_logger = Logger(name=name)
-    return _default_logger
-
-
-def setup_logger(
-    root: Path,
-    level: LogLevel = LogLevel.INFO,
-    console: bool = True,
-    file: bool = True,
-    json_format: bool = True,
-    async_mode: bool = True,
-) -> Logger:
-    """配置日志系统"""
-    global _default_logger
+    def __enter__(self):
+        return self
     
-    targets: List[LogTarget] = []
-    
-    if console:
-        targets.append(ConsoleTarget(level=level, format=LogFormat.TEXT if not json_format else LogFormat.JSON))
-    
-    if file:
-        log_dir = root / "logs"
-        log_dir.mkdir(exist_ok=True)
-        targets.append(FileTarget(
-            filepath=log_dir / "lingshu.jsonl",
-            level=LogLevel.DEBUG,
-            format=LogFormat.JSON,
-            max_size_mb=10,
-            max_backups=10,
-            rotate_daily=True,
-        ))
-    
-    logger = Logger(name="lingshu", level=level, targets=targets, async_mode=async_mode)
-    _default_logger = logger
-    return logger
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
 
 
 if __name__ == "__main__":
-    # 示例用法
-    import tempfile
+    # 测试代码
+    logger = Logger(
+        name="test",
+        level=LogLevel.DEBUG,
+        targets=[
+            ConsoleTarget(level=LogLevel.DEBUG, use_color=True),
+            FileTarget(Path("test.log"), level=LogLevel.INFO),
+        ],
+        async_mode=False,
+    )
     
-    with tempfile.TemporaryDirectory() as tmpdir:
-        root = Path(tmpdir)
-        logger = setup_logger(root, level=LogLevel.DEBUG, console=True, file=True)
-        
-        # 基本日志
-        logger.debug("调试信息")
-        logger.info("系统启动")
-        logger.warning("内存使用率较高: 85%")
-        logger.error("连接失败", exception=ConnectionError("timeout"))
-        
-        # 上下文
-        with LogContext.scope(request_id="req-123", user_id="user-456"):
-            logger.info("处理请求")
-        
-        # 性能记录
-        logger.log_performance("图像识别", 1250.5, True)
-        
-        # 查询
-        time.sleep(0.1)
-        records = logger.query(level=LogLevel.INFO, limit=5)
-        print(f"\n查询到 {len(records)} 条 INFO 记录")
-        
-        # 统计
-        print(f"\n日志统计: {logger.get_stats()}")
-        
-        logger.close()
+    # 设置上下文
+    LogContext.set_value("request_id", "12345")
+    LogContext.set_value("user_id", "user_1")
+    
+    logger.debug("调试信息")
+    logger.info("普通信息")
+    logger.warning("警告信息")
+    logger.error("错误信息")
+    logger.critical("严重错误")
+    
+    # 测试敏感信息过滤
+    logger.info("password: secret123")
+    logger.info("api_key: abc123")
+    
+    # 获取最近日志
+    recent = logger.get_recent_logs(5)
+    print(f"\n最近 5 条日志:")
+    for log in recent:
+        print(f"  {log.to_text()}")
+    
+    logger.close()

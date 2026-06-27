@@ -29,9 +29,9 @@ import time
 import traceback
 from collections import defaultdict, deque
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, asdict
 from datetime import datetime, timedelta
-from enum import Enum
+from enum import Enum, auto
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
@@ -165,27 +165,32 @@ class MetricsCollector:
             description=description,
         )
         
+        key = f"{name}:{json.dumps(labels or {}, sort_keys=True)}"
+        
         with self._lock:
-            key = f"{name}:{json.dumps(labels or {}, sort_keys=True)}"
             self._metrics[key].append(metric)
             
             if metric_type == MetricType.COUNTER:
                 self._counters[key] += value
     
-    def increment(self, name: str, value: float = 1.0, labels: Optional[Dict[str, str]] = None) -> None:
-        """增加计数器"""
-        self.record(name, value, MetricType.COUNTER, labels)
+    def gauge(self, name: str, value: float, labels: Optional[Dict[str, str]] = None, unit: str = "", description: str = "") -> None:
+        """记录 Gauge 指标"""
+        self.record(name, value, MetricType.GAUGE, labels, unit, description)
     
-    def gauge(self, name: str, value: float, labels: Optional[Dict[str, str]] = None) -> None:
-        """设置仪表盘值"""
-        self.record(name, value, MetricType.GAUGE, labels)
+    def counter(self, name: str, value: float, labels: Optional[Dict[str, str]] = None, unit: str = "", description: str = "") -> None:
+        """记录 Counter 指标"""
+        self.record(name, value, MetricType.COUNTER, labels, unit, description)
     
-    def timer(self, name: str, duration_ms: float, labels: Optional[Dict[str, str]] = None) -> None:
-        """记录计时"""
-        self.record(name, duration_ms, MetricType.TIMER, labels, unit="ms")
+    def timer(self, name: str, value_ms: float, labels: Optional[Dict[str, str]] = None, description: str = "") -> None:
+        """记录 Timer 指标"""
+        self.record(name, value_ms, MetricType.TIMER, labels, "ms", description)
+    
+    def rate(self, name: str, value: float, labels: Optional[Dict[str, str]] = None, unit: str = "", description: str = "") -> None:
+        """记录 Rate 指标"""
+        self.record(name, value, MetricType.RATE, labels, unit, description)
     
     def get_latest(self, name: str, labels: Optional[Dict[str, str]] = None) -> Optional[MetricValue]:
-        """获取最新值"""
+        """获取最新指标值"""
         key = f"{name}:{json.dumps(labels or {}, sort_keys=True)}"
         with self._lock:
             metrics = self._metrics.get(key)
@@ -398,16 +403,11 @@ class PerformanceMonitor:
     
     def _fire_alert(self, metric_name: str, severity: AlertSeverity, value: float, threshold: float) -> None:
         """触发告警"""
-        # 检查是否已经存在未解决的相同告警
-        for alert in self._alerts:
-            if alert.metric_name == metric_name and not alert.resolved:
-                return  # 已存在未解决告警
-        
         alert = MetricAlert(
-            alert_id=f"alert_{int(time.time())}_{metric_name}",
+            alert_id=f"alert_{int(time.time() * 1000)}",
             metric_name=metric_name,
             severity=severity,
-            message=f"{metric_name} 超过 {severity.value} 阈值: {value:.2f} (阈值: {threshold:.2f})",
+            message=f"{metric_name} 达到 {value:.2f} (阈值: {threshold})",
             threshold=threshold,
             actual_value=value,
             timestamp=time.time(),
@@ -415,12 +415,32 @@ class PerformanceMonitor:
         
         self._alerts.append(alert)
         
-        # 调用处理器
+        # 通知处理器
         for handler in self._alert_handlers:
             try:
                 handler(alert)
             except Exception as e:
                 print(f"[PerformanceMonitor] 告警处理错误: {e}")
+    
+    def add_alert_handler(self, handler: Callable[[MetricAlert], None]) -> None:
+        """添加告警处理器"""
+        self._alert_handlers.append(handler)
+    
+    def remove_alert_handler(self, handler: Callable[[MetricAlert], None]) -> None:
+        """移除告警处理器"""
+        if handler in self._alert_handlers:
+            self._alert_handlers.remove(handler)
+    
+    def get_alerts(self, severity: Optional[AlertSeverity] = None, resolved: Optional[bool] = None, limit: int = 100) -> List[MetricAlert]:
+        """获取告警"""
+        alerts = self._alerts
+        
+        if severity:
+            alerts = [a for a in alerts if a.severity == severity]
+        if resolved is not None:
+            alerts = [a for a in alerts if a.resolved == resolved]
+        
+        return alerts[-limit:]
     
     def resolve_alert(self, alert_id: str) -> bool:
         """解决告警"""
@@ -431,25 +451,11 @@ class PerformanceMonitor:
                 return True
         return False
     
-    def on_alert(self, handler: Callable[[MetricAlert], None]) -> None:
-        """注册告警处理器"""
-        self._alert_handlers.append(handler)
-    
-    def set_threshold(self, metric_name: str, warning: Optional[float] = None, critical: Optional[float] = None) -> None:
-        """设置告警阈值"""
-        if metric_name not in self._thresholds:
-            self._thresholds[metric_name] = {}
-        
-        if warning is not None:
-            self._thresholds[metric_name]["warning"] = warning
-        if critical is not None:
-            self._thresholds[metric_name]["critical"] = critical
-    
     @contextmanager
     def trace(self, operation: str, trace_id: Optional[str] = None, tags: Optional[Dict[str, str]] = None):
-        """追踪上下文管理器"""
-        span_id = f"span_{int(time.time() * 1000)}_{threading.get_ident()}"
-        trace_id = trace_id or f"trace_{int(time.time())}"
+        """追踪上下文"""
+        span_id = f"span_{int(time.time() * 1000000)}"
+        trace_id = trace_id or span_id
         
         span = TraceSpan(
             span_id=span_id,
@@ -466,214 +472,117 @@ class PerformanceMonitor:
         
         try:
             yield span
+        except Exception as e:
+            span.logs.append({
+                "timestamp": time.time(),
+                "level": "error",
+                "message": str(e),
+                "traceback": traceback.format_exc(),
+            })
+            raise
         finally:
             span.end_time = time.time()
-            
-            # 记录计时指标
-            self.collector.timer(f"trace.{operation}", span.duration_ms, span.tags)
+            self.collector.timer(f"trace.{operation}", span.duration_ms, tags=tags or {})
     
-    def get_active_traces(self) -> List[Dict[str, Any]]:
-        """获取活跃追踪"""
+    def get_trace(self, trace_id: str) -> List[TraceSpan]:
+        """获取追踪数据"""
         with self._trace_lock:
-            return {
-                trace_id: [span.to_dict() for span in spans]
-                for trace_id, spans in self._active_traces.items()
-            }
+            return list(self._active_traces.get(trace_id, []))
     
-    def get_alerts(self, resolved: Optional[bool] = None, severity: Optional[AlertSeverity] = None) -> List[MetricAlert]:
-        """获取告警"""
-        alerts = self._alerts
-        
-        if resolved is not None:
-            alerts = [a for a in alerts if a.resolved == resolved]
-        if severity is not None:
-            alerts = [a for a in alerts if a.severity == severity]
-        
-        return sorted(alerts, key=lambda a: a.timestamp, reverse=True)
-    
-    def generate_report(self, duration_hours: float = 24.0) -> Dict[str, Any]:
+    def generate_report(self, format: str = "json", duration_hours: int = 24) -> str:
         """生成性能报告"""
-        start_time = time.time() - (duration_hours * 3600)
+        end_time = time.time()
+        start_time = end_time - duration_hours * 3600
         
-        report = {
+        metrics = self.collector.get_all_metrics()
+        report_data = {
             "generated_at": datetime.now().isoformat(),
             "duration_hours": duration_hours,
-            "system": {},
-            "agent": {},
-            "alerts": {
-                "total": len(self._alerts),
-                "unresolved": len([a for a in self._alerts if not a.resolved]),
-                "by_severity": {},
-            },
+            "metrics_summary": {},
+            "alerts": [a.to_dict() for a in self._alerts[-50:]],
         }
         
-        # 系统指标
-        for metric_name in ["cpu_percent", "memory_percent", "disk_percent"]:
-            stats = self.collector.get_stats(metric_name, {"source": "system"})
+        for metric_name in metrics:
+            stats = self.collector.get_stats(metric_name)
             if stats:
-                report["system"][metric_name] = stats
-        
-        # Agent 指标
-        for metric_name in ["agent_cpu_percent", "agent_memory_mb", "agent_threads"]:
-            stats = self.collector.get_stats(metric_name, {"source": "agent"})
-            if stats:
-                report["agent"][metric_name] = stats
-        
-        # 告警统计
-        for severity in AlertSeverity:
-            count = len([a for a in self._alerts if a.severity == severity])
-            report["alerts"]["by_severity"][severity.value] = count
-        
-        return report
-    
-    def export_report(self, filepath: Path, format: str = "json") -> None:
-        """导出报告"""
-        report = self.generate_report()
-        
-        filepath.parent.mkdir(parents=True, exist_ok=True)
+                report_data["metrics_summary"][metric_name] = stats
         
         if format == "json":
-            with open(filepath, "w", encoding="utf-8") as f:
-                json.dump(report, f, indent=2, ensure_ascii=False, default=str)
-        
+            return json.dumps(report_data, indent=2, ensure_ascii=False, default=str)
         elif format == "markdown":
-            md = self._report_to_markdown(report)
-            with open(filepath, "w", encoding="utf-8") as f:
-                f.write(md)
+            return self._generate_markdown_report(report_data)
+        else:
+            return json.dumps(report_data, indent=2, ensure_ascii=False, default=str)
     
-    def _report_to_markdown(self, report: Dict[str, Any]) -> str:
-        """转换为 Markdown"""
+    def _generate_markdown_report(self, data: Dict) -> str:
+        """生成 Markdown 报告"""
         lines = [
             "# 灵枢 Agent 性能报告",
             f"",
-            f"生成时间: {report['generated_at']}",
-            f"统计周期: {report['duration_hours']} 小时",
+            f"生成时间: {data['generated_at']}",
+            f"统计时长: {data['duration_hours']} 小时",
             f"",
-            "## 系统指标",
+            "## 指标摘要",
             f"",
         ]
         
-        for name, stats in report.get("system", {}).items():
-            lines.append(f"### {name}")
+        for metric_name, stats in data["metrics_summary"].items():
+            lines.append(f"### {metric_name}")
             lines.append(f"- 平均值: {stats.get('mean', 0):.2f}")
             lines.append(f"- 最大值: {stats.get('max', 0):.2f}")
+            lines.append(f"- 最小值: {stats.get('min', 0):.2f}")
             lines.append(f"- P95: {stats.get('p95', 0):.2f}")
-            lines.append(f"- 最新: {stats.get('latest', 0):.2f}")
             lines.append("")
         
-        lines.extend([
-            "## Agent 指标",
-            "",
-        ])
-        
-        for name, stats in report.get("agent", {}).items():
-            lines.append(f"### {name}")
-            lines.append(f"- 平均值: {stats.get('mean', 0):.2f}")
-            lines.append(f"- 最大值: {stats.get('max', 0):.2f}")
-            lines.append("")
-        
-        lines.extend([
-            "## 告警统计",
-            f"",
-            f"- 总计: {report['alerts']['total']}",
-            f"- 未解决: {report['alerts']['unresolved']}",
-            f"",
-        ])
-        
-        for severity, count in report['alerts']['by_severity'].items():
-            lines.append(f"- {severity}: {count}")
+        lines.append("## 最近告警")
+        lines.append("")
+        for alert in data.get("alerts", [])[:10]:
+            lines.append(f"- **{alert['severity']}** {alert['metric_name']}: {alert['message']}")
         
         return "\n".join(lines)
     
-    def benchmark(self, func: Callable, *args, iterations: int = 10, **kwargs) -> Dict[str, float]:
+    def benchmark(self, name: str, func: Callable, iterations: int = 10) -> Dict[str, Any]:
         """基准测试"""
-        durations = []
+        times = []
         
         for _ in range(iterations):
             start = time.time()
             try:
-                func(*args, **kwargs)
+                func()
             except Exception as e:
                 print(f"[PerformanceMonitor] 基准测试错误: {e}")
-            finally:
-                durations.append((time.time() - start) * 1000)
+            end = time.time()
+            times.append((end - start) * 1000)
         
-        return {
+        result = {
+            "name": name,
             "iterations": iterations,
-            "min_ms": min(durations),
-            "max_ms": max(durations),
-            "mean_ms": sum(durations) / len(durations),
-            "median_ms": self.collector._percentile(durations, 0.5),
-            "p95_ms": self.collector._percentile(durations, 0.95),
+            "min_ms": min(times),
+            "max_ms": max(times),
+            "mean_ms": sum(times) / len(times),
+            "p50_ms": MetricsCollector._percentile(times, 0.5),
+            "p95_ms": MetricsCollector._percentile(times, 0.95),
         }
-    
-    def get_stats(self) -> Dict[str, Any]:
-        """获取统计"""
-        return {
-            "metrics_count": len(self.collector.get_all_metrics()),
-            "alerts_total": len(self._alerts),
-            "alerts_unresolved": len([a for a in self._alerts if not a.resolved]),
-            "thresholds_count": len(self._thresholds),
-            "collection_interval": self._collection_interval,
-            "monitoring": self._collector_running,
-        }
-    
-    def shutdown(self) -> None:
-        """关闭监控"""
-        self.stop()
+        
+        self.collector.timer(f"benchmark.{name}", result["mean_ms"])
+        
+        return result
 
 
 if __name__ == "__main__":
-    # 示例用法
-    import tempfile
+    # 测试代码
+    root = Path(__file__).parent.parent
+    monitor = PerformanceMonitor(root)
     
-    with tempfile.TemporaryDirectory() as tmpdir:
-        root = Path(tmpdir)
-        monitor = PerformanceMonitor(root)
-        
-        # 注册告警处理器
-        def on_alert(alert: MetricAlert):
-            print(f"[ALERT] {alert.severity.value}: {alert.message}")
-        
-        monitor.on_alert(on_alert)
-        
-        # 启动监控
-        monitor.start()
-        
-        # 模拟一些指标
-        monitor.collector.timer("agent.inference", 1500, {"model": "whisper"})
-        monitor.collector.timer("agent.inference", 2000, {"model": "whisper"})
-        monitor.collector.increment("agent.requests", 1, {"endpoint": "voice"})
-        
-        # 使用追踪
-        with monitor.trace("process_voice_command", tags={"user": "test"}) as span:
-            time.sleep(0.1)
-            span.logs.append({"event": "语音识别完成", "timestamp": time.time()})
-        
-        # 等待采集
-        time.sleep(3)
-        
-        # 查看统计
-        print(f"\n监控统计: {monitor.get_stats()}")
-        
-        # 指标统计
-        print(f"\nInference 统计: {monitor.collector.get_stats('agent.inference')}")
-        
-        # 生成报告
-        report = monitor.generate_report(duration_hours=1)
-        print(f"\n报告预览: {list(report.keys())}")
-        
-        # 导出报告
-        report_path = root / "report.md"
-        monitor.export_report(report_path, format="markdown")
-        print(f"\n报告已导出: {report_path}")
-        print(report_path.read_text()[:500])
-        
-        # 基准测试
-        def test_func():
-            time.sleep(0.01)
-        
-        benchmark = monitor.benchmark(test_func, iterations=5)
-        print(f"\n基准测试: {benchmark}")
-        
-        monitor.shutdown()
+    # 启动监控
+    monitor.start()
+    
+    # 运行 10 秒
+    time.sleep(10)
+    
+    # 生成报告
+    report = monitor.generate_report(format="markdown")
+    print(report)
+    
+    # 停止
+    monitor.stop()
