@@ -1,35 +1,29 @@
-' ============================================================
-' 灵枢启动台 — 创建桌面快捷方式
-' 用途：为 start_gui.vbs 创建带图标的桌面快捷方式
-' ============================================================
+' 创建灵枢 Agent 桌面快捷方式
+' 右键管理员运行：WScript "create_shortcut.vbs"
 
-Set WshShell = CreateObject("WScript.Shell")
+Dim wsh, fso, desktop, shortcut, rootDir
+Set wsh = CreateObject("WScript.Shell")
 Set fso = CreateObject("Scripting.FileSystemObject")
 
-Dim rootDir, desktopDir, shortcutPath, iconPath
 rootDir = fso.GetParentFolderName(WScript.ScriptFullName)
-desktopDir = WshShell.SpecialFolders("Desktop")
+desktop = wsh.SpecialFolders("Desktop")
 
-' 创建桌面快捷方式
-shortcutPath = desktopDir & "\灵枢启动台.lnk"
+Set shortcut = wsh.CreateShortcut(desktop & "\灵枢 Agent ☯.lnk")
 
-Set shortcut = WshShell.CreateShortcut(shortcutPath)
-shortcut.TargetPath = rootDir & "\start_gui.vbs"
+' 使用 WScript 启动，最小化窗口
+shortcut.TargetPath = "WScript.exe"
+shortcut.Arguments = Chr(34) & rootDir & "\start_gui.vbs" & Chr(34)
 shortcut.WorkingDirectory = rootDir
-shortcut.IconLocation = "%SystemRoot%\System32\shell32.dll,14"
-shortcut.Description = "☯ 灵枢 Agent 启动台 — 双击启动"
-shortcut.WindowStyle = 7  ' 最小化运行
+shortcut.Description = "灵枢 Agent — 自主智能体系统"
 
-On Error Resume Next
-shortcut.Save
-
-If Err.Number = 0 Then
-    WshShell.Popup "✅ 桌面快捷方式已创建！" & vbCrLf & vbCrLf & "快捷方式路径：" & shortcutPath, 3, "☯ 灵枢启动台", 64
-Else
-    WshShell.Popup "❌ 创建快捷方式失败：" & Err.Description, 5, "☯ 灵枢启动台", 16
+' 尝试设置图标（如果存在）
+iconPath = rootDir & "\icon.ico"
+If fso.FileExists(iconPath) Then
+    shortcut.IconLocation = iconPath
 End If
 
-On Error GoTo 0
-Set shortcut = Nothing
-Set WshShell = Nothing
-Set fso = Nothing
+shortcut.Save
+
+MsgBox "快捷方式已创建到桌面！" & vbCrLf & vbCrLf & _
+       "名称：灵枢 Agent ☯" & vbCrLf & _
+       "位置：" & desktop, vbInformation, "创建成功"

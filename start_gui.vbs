@@ -1,52 +1,66 @@
-' ============================================================
-' 灵枢启动台 — 双击启动脚本（无黑窗口）
-' 用途：Windows 双击直接打开 GUI，不显示命令行
-' ============================================================
+' 启动灵枢 Agent — 绕过 Windows Store Python 沙箱
+' 自动检测可用的 Python 解释器
 
-Set WshShell = CreateObject("WScript.Shell")
+Dim wsh, fso, pythonExe, scriptPath, rootDir
+Set wsh = CreateObject("WScript.Shell")
+Set fso = CreateObject("Scripting.FileSystemObject")
 
-' 获取脚本所在目录（项目根目录）
-Dim rootDir
-rootDir = WshShell.CurrentDirectory
+' 定位项目根目录
+rootDir = fso.GetParentFolderName(WScript.ScriptFullName)
 
-' 查找 Python 解释器
-Dim pythonExe
+' 候选 Python 路径（按优先级）
+Dim candidates(5)
+candidates(0) = rootDir & "\python\pythonw.exe"
+candidates(1) = rootDir & "\python\python.exe"
+
+' Kimi 托管 Python 运行时
+candidates(2) = wsh.ExpandEnvironmentStrings("%USERPROFILE%") & _
+    "\AppData\Roaming\kimi-desktop\daimon-share\daimon\runtime\python\.venv\Scripts\pythonw.exe"
+candidates(3) = wsh.ExpandEnvironmentStrings("%USERPROFILE%") & _
+    "\AppData\Roaming\kimi-desktop\daimon-share\daimon\runtime\python\.venv\Scripts\python.exe"
+
+' 标准安装 Python
+candidates(4) = "C:\Python312\pythonw.exe"
+candidates(5) = "pythonw"
+
 pythonExe = ""
-
-' 1. 优先使用 Kimi 托管 Python
-If pythonExe = "" Then
-    If WshShell.ExpandEnvironmentStrings("%KIMI_PYTHON%") <> "%KIMI_PYTHON%" Then
-        pythonExe = WshShell.ExpandEnvironmentStrings("%KIMI_PYTHON%")
+For Each cand In candidates
+    If fso.FileExists(cand) Then
+        pythonExe = cand
+        Exit For
     End If
-End If
+Next
 
-' 2. 检查同目录 python/
+' 如果没找到，尝试 pythonw 命令
 If pythonExe = "" Then
-    Dim fso
-    Set fso = CreateObject("Scripting.FileSystemObject")
-    If fso.FileExists(rootDir & "\python\python.exe") Then
-        pythonExe = rootDir & "\python\python.exe"
+    Dim exec
+    On Error Resume Next
+    Set exec = wsh.Exec("pythonw --version")
+    If Err.Number = 0 Then
+        pythonExe = "pythonw"
+    Else
+        Set exec = wsh.Exec("python --version")
+        If Err.Number = 0 Then
+            pythonExe = "python"
+        End If
     End If
+    On Error GoTo 0
 End If
 
-' 3. 检查常见 Python 安装路径
+' 如果还是找不到，报错
 If pythonExe = "" Then
-    If fso.FileExists(WshShell.ExpandEnvironmentStrings("%LOCALAPPDATA%") & "\Programs\Python\Python312\python.exe") Then
-        pythonExe = WshShell.ExpandEnvironmentStrings("%LOCALAPPDATA%") & "\Programs\Python\Python312\python.exe"
-    End If
+    MsgBox "无法找到可用的 Python 解释器！" & vbCrLf & vbCrLf & _
+           "请安装 Python 3.9-3.12 标准版（非 Windows Store 版）" & vbCrLf & _
+           "或下载便携版 Python 放在项目目录的 python/ 文件夹中。", _
+           vbCritical, "灵枢启动失败"
+    WScript.Quit 1
 End If
 
-' 4. 回退到 PATH 中的 python
-If pythonExe = "" Then
-    pythonExe = "python"
-End If
+' 启动 GUI 启动器
+scriptPath = rootDir & "\gui_launcher.py"
 
-' 设置环境变量
-WshShell.Environment("PROCESS")("PYTHONPATH") = rootDir
+' 使用 WScript.Shell 启动，隐藏窗口
+Dim cmd
+cmd = "cmd /c """ & pythonExe & """ """ & scriptPath & """"""
 
-' 启动 GUI（0 = 隐藏窗口，不显示命令行）
-WshShell.Run """" & pythonExe & """ """ & rootDir & "\gui_launcher.py""", 0, False
-
-' 清理
-Set WshShell = Nothing
-Set fso = Nothing
+wsh.Run cmd, 1, False
