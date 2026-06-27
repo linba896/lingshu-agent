@@ -98,9 +98,9 @@ class BackupRecord:
     def _human_size(size_bytes: int) -> str:
         """人类可读大小"""
         for unit in ["B", "KB", "MB", "GB", "TB"]:
-            if size_bytes < 1024.0:
+            if size_bytes < 1024:
                 return f"{size_bytes:.2f} {unit}"
-            size_bytes /= 1024.0
+            size_bytes /= 1024
         return f"{size_bytes:.2f} PB"
     
     @classmethod
@@ -125,25 +125,16 @@ class BackupRecord:
 class BackupManager:
     """备份管理器"""
     
-    def __init__(
-        self,
-        root: Path,
-        backup_dir: Optional[Path] = None,
-        config: Optional[Dict[str, Any]] = None,
-    ):
+    def __init__(self, root: Path, config: Optional[Dict[str, Any]] = None):
         self.root = root
         self.config = config or {}
         
-        # 备份目录
-        self.backup_dir = backup_dir or (root / "backups")
-        self.backup_dir.mkdir(parents=True, exist_ok=True)
+        # 目录
+        self.backup_dir = root / "backups"
+        self.backup_dir.mkdir(exist_ok=True)
+        self.index_file = self.backup_dir / "index.json"
         
-        # 增量备份快照目录
-        self.snapshot_dir = self.backup_dir / ".snapshots"
-        self.snapshot_dir.mkdir(exist_ok=True)
-        
-        # 数据库
-        self.index_file = self.backup_dir / "backup_index.json"
+        # 记录
         self._records: List[BackupRecord] = []
         self._load_index()
         
@@ -159,9 +150,11 @@ class BackupManager:
         self._encrypt_backups = self.config.get("encrypt_backups", False)
         self._encryption_key = self.config.get("encryption_key")
         
-        # 回调
-        self._on_progress: Optional[Callable[[Dict[str, Any]], None]] = None
-        self._on_complete: Optional[Callable[[bool, BackupRecord], None]] = None
+        # 自动备份
+        self._auto_backup_enabled = self.config.get("auto_backup_enabled", False)
+        self._auto_backup_interval_hours = self.config.get("auto_backup_interval_hours", 24)
+        self._auto_backup_thread: Optional[threading.Thread] = None
+        self._auto_backup_running = False
     
     def _load_index(self) -> None:
         """加载备份索引"""
@@ -169,48 +162,23 @@ class BackupManager:
             try:
                 with open(self.index_file, "r", encoding="utf-8") as f:
                     data = json.load(f)
-                self._records = [BackupRecord.from_dict(r) for r in data.get("records", [])]
+                self._records = [BackupRecord.from_dict(r) for r in data]
             except (json.JSONDecodeError, KeyError):
                 self._records = []
     
     def _save_index(self) -> None:
         """保存备份索引"""
-        data = {
-            "updated_at": time.time(),
-            "records": [r.to_dict() for r in self._records],
-        }
+        data = [r.to_dict() for r in self._records]
         with open(self.index_file, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2, ensure_ascii=False, default=str)
+            json.dump(data, f, indent=2, ensure_ascii=False)
     
     def _generate_backup_id(self, type: BackupType) -> str:
         """生成备份 ID"""
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         return f"{type.value}_{timestamp}"
     
-    def _calculate_checksum(self, filepath: Path) -> str:
-        """计算文件校验和"""
-        sha256 = hashlib.sha256()
-        with open(filepath, "rb") as f:
-            for chunk in iter(lambda: f.read(8192), b""):
-                sha256.update(chunk)
-        return sha256.hexdigest()
-    
-    def _should_skip(self, filepath: Path) -> bool:
-        """判断是否应该跳过此文件"""
-        skip_extensions = {".tmp", ".temp", ".log", ".cache"}
-        skip_names = {"__pycache__", ".git", ".venv", "node_modules", ".pytest_cache"}
-        
-        if filepath.suffix.lower() in skip_extensions:
-            return True
-        
-        for part in filepath.parts:
-            if part in skip_names:
-                return True
-        
-        return False
-    
     def _set_state(self, state: BackupState) -> None:
-        """更新状态"""
+        """设置状态"""
         with self._state_lock:
             self._current_state = state
     
@@ -222,12 +190,19 @@ class BackupManager:
     def _update_progress(self, percent: int, message: str) -> None:
         """更新进度"""
         self._progress = {"percent": percent, "message": message}
-        if self._on_progress:
-            self._on_progress(self._progress)
+        if hasattr(self, '_on_progress') and self._on_progress:
+            try:
+                self._on_progress(self._progress.copy())
+            except Exception as e:
+                print(f"[BackupManager] Progress callback error: {e}")
     
     def get_progress(self) -> Dict[str, Any]:
         """获取进度"""
         return self._progress.copy()
+
+    def on_progress(self, callback: Callable[[Dict[str, Any]], None]) -> None:
+        """Register progress callback"""
+        self._on_progress = callback
     
     def create_backup(
         self,
@@ -325,36 +300,56 @@ class BackupManager:
             self._records.append(record)
             self._save_index()
             
-            self._update_progress(100, "备份完成")
+            # 清理旧备份
+            self._update_progress(95, "清理旧备份...")
+            self._cleanup_old_backups()
+            
+            self._update_progress(100, f"备份完成: {backup_id}")
             self._set_state(BackupState.COMPLETED)
             
-            if self._on_complete:
-                self._on_complete(True, record)
-            
-            print(f"[BackupManager] 备份完成: {backup_id} ({record._human_size(size_bytes)})")
             return record
             
         except Exception as e:
             self._update_progress(0, f"备份失败: {e}")
             self._set_state(BackupState.FAILED)
             
-            if self._on_complete:
-                self._on_complete(False, None)
+            # 清理失败的归档
+            if archive_path.exists():
+                archive_path.unlink()
             
-            print(f"[BackupManager] 备份失败: {e}")
             return None
     
-    def list_backups(self, type: Optional[BackupType] = None, tags: Optional[List[str]] = None) -> List[BackupRecord]:
-        """列出备份"""
-        records = self._records
+    def _should_skip(self, file_path: Path) -> bool:
+        """判断是否应该跳过文件"""
+        skip_patterns = [
+            "__pycache__", ".pyc", ".pyo", ".git", ".tmp", ".temp",
+            "*.log", "*.cache", ".DS_Store", "Thumbs.db",
+        ]
         
+        for pattern in skip_patterns:
+            if pattern in str(file_path):
+                return True
+        
+        # 跳过大于 100MB 的文件（除非特别配置）
+        max_size = self.config.get("max_file_size_mb", 100) * 1024 * 1024
+        if file_path.stat().st_size > max_size:
+            return True
+        
+        return False
+    
+    def _calculate_checksum(self, filepath: Path) -> str:
+        """计算文件校验和"""
+        sha256 = hashlib.sha256()
+        with open(filepath, "rb") as f:
+            for chunk in iter(lambda: f.read(8192), b""):
+                sha256.update(chunk)
+        return sha256.hexdigest()
+    
+    def list_backups(self, type: Optional[BackupType] = None) -> List[BackupRecord]:
+        """列出备份记录"""
         if type:
-            records = [r for r in records if r.type == type]
-        
-        if tags:
-            records = [r for r in records if any(t in r.tags for t in tags)]
-        
-        return sorted(records, key=lambda r: r.timestamp, reverse=True)
+            return [r for r in self._records if r.type == type]
+        return self._records.copy()
     
     def get_record(self, backup_id: str) -> Optional[BackupRecord]:
         """获取备份记录"""
@@ -369,84 +364,31 @@ class BackupManager:
         if not record:
             return False
         
-        self._set_state(BackupState.VERIFYING)
-        self._update_progress(0, "正在验证备份...")
-        
-        try:
-            archive_path = Path(record.archive_path)
-            if not archive_path.exists():
-                self._update_progress(0, "备份文件不存在")
-                self._set_state(BackupState.FAILED)
-                return False
-            
-            # 验证校验和
-            current_checksum = self._calculate_checksum(archive_path)
-            if current_checksum != record.checksum:
-                self._update_progress(0, "校验和不匹配！备份可能已损坏")
-                self._set_state(BackupState.FAILED)
-                return False
-            
-            # 尝试打开 ZIP 验证结构
-            with zipfile.ZipFile(archive_path, "r") as zf:
-                bad_file = zf.testzip()
-                if bad_file:
-                    self._update_progress(0, f"ZIP 损坏: {bad_file}")
-                    self._set_state(BackupState.FAILED)
-                    return False
-            
-            self._update_progress(100, "验证通过")
-            self._set_state(BackupState.COMPLETED)
-            return True
-            
-        except Exception as e:
-            self._update_progress(0, f"验证失败: {e}")
-            self._set_state(BackupState.FAILED)
+        archive_path = Path(record.archive_path)
+        if not archive_path.exists():
             return False
+        
+        current_checksum = self._calculate_checksum(archive_path)
+        return current_checksum == record.checksum
     
-    def restore_backup(
-        self,
-        backup_id: str,
-        target_dir: Optional[Path] = None,
-        selective_files: Optional[List[str]] = None,
-    ) -> bool:
+    def restore_backup(self, backup_id: str, target_path: Optional[Path] = None) -> bool:
         """恢复备份"""
         record = self.get_record(backup_id)
         if not record:
-            print(f"[BackupManager] 备份不存在: {backup_id}")
             return False
         
-        self._set_state(BackupState.RUNNING)
-        self._update_progress(0, "准备恢复...")
+        archive_path = Path(record.archive_path)
+        if not archive_path.exists():
+            return False
         
-        target_dir = target_dir or self.root
-        target_dir.mkdir(parents=True, exist_ok=True)
+        target = target_path or self.root
         
         try:
-            archive_path = Path(record.archive_path)
-            if not archive_path.exists():
-                self._set_state(BackupState.FAILED)
-                self._update_progress(0, "备份文件不存在")
-                return False
-            
-            self._update_progress(10, "正在解压...")
-            
             with zipfile.ZipFile(archive_path, "r") as zf:
-                if selective_files:
-                    # 选择性恢复
-                    for file_name in selective_files:
-                        if file_name in zf.namelist():
-                            zf.extract(file_name, target_dir)
-                else:
-                    # 全量恢复
-                    zf.extractall(target_dir)
-            
-            self._update_progress(100, "恢复完成")
-            self._set_state(BackupState.COMPLETED)
+                zf.extractall(target)
             return True
-            
         except Exception as e:
-            self._update_progress(0, f"恢复失败: {e}")
-            self._set_state(BackupState.FAILED)
+            print(f"[BackupManager] 恢复失败: {e}")
             return False
     
     def delete_backup(self, backup_id: str) -> bool:
@@ -455,102 +397,45 @@ class BackupManager:
         if not record:
             return False
         
-        self._set_state(BackupState.DELETING)
+        archive_path = Path(record.archive_path)
+        if archive_path.exists():
+            archive_path.unlink()
         
-        try:
-            archive_path = Path(record.archive_path)
-            if archive_path.exists():
-                archive_path.unlink()
-            
-            self._records = [r for r in self._records if r.backup_id != backup_id]
-            self._save_index()
-            
-            self._set_state(BackupState.COMPLETED)
-            print(f"[BackupManager] 备份已删除: {backup_id}")
-            return True
-            
-        except Exception as e:
-            self._set_state(BackupState.FAILED)
-            print(f"[BackupManager] 删除失败: {e}")
-            return False
+        self._records = [r for r in self._records if r.backup_id != backup_id]
+        self._save_index()
+        return True
     
-    def cleanup_old_backups(self) -> int:
+    def cleanup_old_backups(self) -> None:
+        """清理旧备份（公共API）"""
+        self._cleanup_old_backups()
+    
+    def _cleanup_old_backups(self) -> None:
         """清理旧备份"""
-        deleted = 0
-        now = time.time()
+        # 按数量限制
+        if len(self._records) > self._max_backups:
+            to_remove = sorted(self._records, key=lambda r: r.timestamp)[:len(self._records) - self._max_backups]
+            for record in to_remove:
+                self.delete_backup(record.backup_id)
         
-        # 按年龄清理
-        max_age = timedelta(days=self._max_age_days).total_seconds()
-        to_remove = []
-        
-        for record in self._records:
-            if now - record.timestamp > max_age:
-                to_remove.append(record)
-        
-        # 按数量清理
-        all_backups = sorted(self._records, key=lambda r: r.timestamp)
-        if len(all_backups) > self._max_backups:
-            to_remove.extend(all_backups[:len(all_backups) - self._max_backups])
-        
-        # 去重并删除
-        for record in set(to_remove):
-            if self.delete_backup(record.backup_id):
-                deleted += 1
-        
-        if deleted > 0:
-            print(f"[BackupManager] 清理了 {deleted} 个旧备份")
-        
-        return deleted
-    
-    def on_progress(self, callback: Callable[[Dict[str, Any]], None]) -> None:
-        """注册进度回调"""
-        self._on_progress = callback
-    
-    def on_complete(self, callback: Callable[[bool, BackupRecord], None]) -> None:
-        """注册完成回调"""
-        self._on_complete = callback
+        # 按时间限制
+        cutoff = time.time() - (self._max_age_days * 24 * 3600)
+        for record in self._records.copy():
+            if record.timestamp < cutoff:
+                self.delete_backup(record.backup_id)
     
     def get_stats(self) -> Dict[str, Any]:
-        """获取统计信息"""
+        """获取统计"""
         total_size = sum(r.size_bytes for r in self._records)
-        total_files = sum(r.file_count for r in self._records)
-        
-        type_counts = {}
-        for r in self._records:
-            type_counts[r.type.value] = type_counts.get(r.type.value, 0) + 1
-        
         return {
             "total_backups": len(self._records),
-            "total_size": total_size,
+            "total_size_bytes": total_size,
             "total_size_human": BackupRecord._human_size(total_size),
-            "total_files": total_files,
-            "type_counts": type_counts,
-            "backup_dir": str(self.backup_dir),
+            "by_type": {t.value: len([r for r in self._records if r.type == t]) for t in BackupType},
         }
-
-
-if __name__ == "__main__":
-    # 测试代码
-    root = Path(__file__).parent.parent
-    manager = BackupManager(root)
     
-    # 创建备份
-    record = manager.create_backup(
-        type=BackupType.FULL,
-        source_paths=[root / "config"],
-        tags=["test"],
-    )
-    
-    if record:
-        print(f"备份完成: {record.backup_id}")
-        
-        # 验证
-        valid = manager.verify_backup(record.backup_id)
-        print(f"验证: {'通过' if valid else '失败'}")
-        
-        # 统计
-        stats = manager.get_stats()
-        print(f"统计: {stats}")
-    
-    # 清理
-    manager.cleanup_old_backups()
+    def shutdown(self) -> None:
+        """关闭备份管理器"""
+        if self._auto_backup_running:
+            self._auto_backup_running = False
+            if self._auto_backup_thread:
+                self._auto_backup_thread.join(timeout=5.0)
